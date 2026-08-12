@@ -1,0 +1,14 @@
+# Root-level catch-all — backend/.gitignore and frontend/.gitignore cover
+# their own trees (venv, node_modules, build output, .env); this file only
+# needs what could land at the repo root or that those don't already cover.
+
+# OS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+
+# Claude Code — project-level agents/skills/settings are meant to be
+# shared, but machine-local overrides are not.
+.claude/settings.local.json
