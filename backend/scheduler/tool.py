@@ -13,6 +13,7 @@ tz-aware timestamp before calling this tool — this function only validates
 that result, it does no NLP/parsing of relative language itself.
 """
 import json
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -21,6 +22,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import scheduler.models as scheduled_call_store
 from config import Settings
 from scheduler.models import ScheduledCall
+
+logger = logging.getLogger(__name__)
 
 SCHEDULE_CALLBACK_TOOL = {
     "name": "schedule_callback",
@@ -138,5 +141,11 @@ async def execute_schedule_callback_tool_call(
             resume_stage=args.get("resume_stage"),
         )
     except ScheduleCallbackError as e:
+        # INFO, not an error: this is the model's attempt getting rejected,
+        # not a server fault. Worth keeping an eye on though — a persona
+        # that trips this a lot usually means it's mis-resolving relative
+        # time ("tomorrow after 3pm") rather than the feature being broken.
+        logger.info("schedule_callback rejected persona_id=%s reason=%s", persona_id, e)
         return json.dumps({"error": str(e)})
+    logger.info("schedule_callback accepted persona_id=%s id=%s scheduled_time=%s", persona_id, row.id, row.scheduled_time)
     return json.dumps({"scheduled": True, "id": row.id, "scheduled_time": row.scheduled_time.isoformat()})

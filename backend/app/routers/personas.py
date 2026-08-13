@@ -6,6 +6,7 @@ system_prompt string (the "Generate" button); POST / turns a (possibly
 hand-edited) system_prompt into a real, stored persona. Nothing forces a
 caller through /generate first — system_prompt can be typed from scratch.
 """
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -32,6 +33,8 @@ from db.session import get_db
 from guardrails.drift import check_drift
 from providers.llm import run_turn
 from tools.registry import build_chat_tools
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/personas", tags=["personas"])
 
@@ -131,16 +134,20 @@ async def chat(
     # system_prompt/tools answer with can change.
     effective = await persona_store.get_effective(db, pid, user.id) or persona
 
-    # Defensive skip-on-miss: no tool-instance delete endpoint exists
-    # today, but resolving instead of trusting tool_instance_ids directly
-    # means a future delete can't leave a chat turn crashing on a
-    # dangling id — it'd just silently lose that one tool.
+    # Defensive skip-on-miss: resolving instead of trusting
+    # tool_instance_ids directly means a chat turn never crashes on a
+    # dangling id — it silently loses that one tool instead. A soft-
+    # deleted/detached tool is expected here (tool_store.get_instance just
+    # returns None, no exception); a malformed id string hitting the
+    # ValueError branch below would mean one got into storage without
+    # going through validate_tool_instance_ids, worth knowing about.
     activated_tools = []
     for tid in effective.tool_instance_ids:
         try:
             tool = await tool_store.get_instance(db, uuid.UUID(tid), user.id)
         except ValueError:
             tool = None
+            logger.warning("persona_id=%s has a malformed tool_instance_id=%r", persona_id, tid)
         if tool is not None:
             activated_tools.append(tool)
 

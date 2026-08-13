@@ -3,6 +3,7 @@ for "get persona or 404" used by every /personas/{id}/... route (and
 called directly, not via Depends, wherever persona_id arrives in a
 request body instead of the path — see app/routers/scheduled_calls.py).
 """
+import logging
 import uuid
 
 from fastapi import Depends, HTTPException
@@ -16,6 +17,8 @@ from compiler.models import AssembledPersona
 from config import get_settings
 from db.models import User
 from db.session import get_db
+
+logger = logging.getLogger(__name__)
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -34,6 +37,10 @@ async def get_current_user(
         raise unauthorized
     user = await db.get(User, user_id)
     if user is None:
+        # A structurally valid, unexpired token for a user_id that no
+        # longer resolves — normal after an account deletion (JWTs aren't
+        # revoked, just outlive the account), not necessarily an attack.
+        logger.debug("token valid but user_id=%s no longer exists", user_id)
         raise unauthorized
     return user
 

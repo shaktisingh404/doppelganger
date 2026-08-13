@@ -11,6 +11,13 @@ os.environ.setdefault("GROQ_API_KEY", "test-key")
 import providers.llm as llm
 from compiler.models import InstanceDelta
 from providers.llm import _strip_thinking
+from utils.logging_config import configure as configure_logging
+
+# Standalone (doesn't import app.main like test_app.py/test_tools.py do,
+# so nothing else triggers this) -- without it, llm.logger's
+# warning/error calls exercised below still fire, just through Python's
+# unformatted last-resort handler instead of our timestamped format.
+configure_logging()
 
 assert _strip_thinking("Hello there!") == "Hello there!"
 assert _strip_thinking("<think>hmm, let me consider</think>Hello!") == "Hello!"

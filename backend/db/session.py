@@ -3,12 +3,16 @@ built lazily from settings.database_url so importing this module never
 requires Settings to already be constructed (mirrors config.get_settings'
 own lazy @lru_cache pattern).
 """
+import logging
 from collections.abc import AsyncGenerator
 
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
 from config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -49,6 +53,15 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
             await session.commit()
+        except HTTPException:
+            # An intentional, expected client-facing error (400/404/etc)
+            # that a route raised on purpose — not a server fault, and
+            # every one of these flowing through here at ERROR level with
+            # a full traceback would drown out the exceptions that
+            # actually matter. Still rolls back; just doesn't log.
+            await session.rollback()
+            raise
         except Exception:
+            logger.exception("request failed, rolling back transaction")
             await session.rollback()
             raise

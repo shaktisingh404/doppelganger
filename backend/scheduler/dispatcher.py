@@ -118,6 +118,15 @@ async def _dispatch_one(row: ScheduledCall, user_id: uuid.UUID, settings: Settin
                 row.attempts,
             )
         except Exception:
+            # Anything not already handled above (DB errors, bugs) —
+            # already-logged run_turn failures don't re-hit this since
+            # that inner except returns before propagating.
+            logger.exception(
+                "scheduled_followup_dispatch_error id=%s persona_id=%s attempt=%d",
+                row.id,
+                row.persona_id,
+                row.attempts,
+            )
             await db.rollback()
             raise
 

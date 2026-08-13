@@ -8,6 +8,7 @@ bcrypt's algorithm caps input at 72 bytes; auth/schemas.py::UserCreate
 enforces that at the request boundary so a too-long password fails with a
 clean 422, not a ValueError from inside hash_password.
 """
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -15,6 +16,8 @@ import bcrypt
 import jwt
 
 from config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 def hash_password(password: str) -> str:
@@ -38,5 +41,10 @@ def decode_access_token(token: str, settings: Settings) -> uuid.UUID | None:
     try:
         payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
         return uuid.UUID(payload["sub"])
-    except (jwt.PyJWTError, KeyError, ValueError):
+    except (jwt.PyJWTError, KeyError, ValueError) as e:
+        # DEBUG, not WARNING: an expired/forged token is routine traffic
+        # (every logged-out session), not a server problem — but the
+        # reason is worth having on hand when troubleshooting a specific
+        # "why was I logged out" report.
+        logger.debug("token decode failed: %s: %s", type(e).__name__, e)
         return None

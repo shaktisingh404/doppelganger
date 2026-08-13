@@ -5,6 +5,7 @@ happens separately, via CreatePersonaRequest.tool_instance_ids
 so one activated tool (e.g. one handoff config) can be reused across
 personas without re-entering its config each time.
 """
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -18,6 +19,8 @@ from app.state import tool_definition_store
 from db.models import User
 from db.session import get_db
 from tools.models import ActivatedTool, HandoffDestination, ToolDefinition
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/tools", tags=["tools"])
 
@@ -132,4 +135,5 @@ async def delete_tool(
     deleted = await tool_store.delete_instance(db, tid, user.id)
     if not deleted:
         raise HTTPException(status_code=404, detail="unknown tool_instance_id")
-    await persona_store.detach_tool(db, tool_instance_id, user.id)
+    detached = await persona_store.detach_tool(db, tool_instance_id, user.id)
+    logger.info("tool_instance_id=%s deleted, detached from %d persona(s)", tool_instance_id, len(detached))

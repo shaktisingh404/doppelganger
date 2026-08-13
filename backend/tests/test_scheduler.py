@@ -22,6 +22,14 @@ from db.session import get_session_factory
 from scheduler import dispatcher
 from scheduler.models import ScheduledCall
 from scheduler.tool import ScheduleCallbackError, schedule_callback
+from utils.logging_config import configure as configure_logging
+
+# Standalone (doesn't import app.main like test_app.py/test_tools.py do,
+# so nothing else triggers this) -- without it, dispatcher's/tool's
+# logger.warning/.exception calls below still fire, just through
+# Python's unformatted last-resort handler instead of our timestamped
+# format, same gap this whole logging setup exists to close.
+configure_logging()
 
 NOW = datetime(2026, 8, 11, 12, 0, tzinfo=timezone.utc)
 # Real database_url/jwt_secret_key from .env, only the scheduler-specific
