@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { deleteTool } from '../api'
+import { useConfirm } from './ConfirmDialog'
+import { useToast } from './Toast'
 import { ToolActivationForm } from './ToolActivationForm'
 import type { ActivatedTool, AssembledPersona, ToolDefinition } from '../types'
 
@@ -12,28 +14,28 @@ interface Props {
 }
 
 export function ToolInstanceView({ tool, personas, catalog, onUpdated, onDeleted }: Props) {
+  const confirm = useConfirm()
+  const showToast = useToast()
   const [editing, setEditing] = useState(false)
   const [deleting, setDeleting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
 
   const personaName = (personaId: string) => personas.find((p) => p.persona_id === personaId)?.name ?? '(deleted)'
   const attachedTo = personas.filter((p) => p.tool_instance_ids.includes(tool.tool_instance_id))
   const definition = catalog.find((d) => d.id === tool.tool_id)
 
   async function handleDelete() {
-    const warning =
+    const message =
       attachedTo.length > 0
-        ? `"${tool.name}" is attached to ${attachedTo.map((p) => p.name).join(', ')}. Deleting it will disconnect it from ${attachedTo.length === 1 ? 'that assistant' : 'those assistants'}. Delete anyway?`
+        ? `"${tool.name}" is attached to ${attachedTo.map((p) => p.name).join(', ')}. Deleting it will disconnect it from ${attachedTo.length === 1 ? 'that assistant' : 'those assistants'}.`
         : `Delete "${tool.name}"? This can't be undone.`
-    if (!window.confirm(warning)) return
+    if (!(await confirm({ message, confirmLabel: 'Delete', danger: true }))) return
 
     setDeleting(true)
-    setError(null)
     try {
       await deleteTool(tool.tool_instance_id)
       onDeleted(tool.tool_instance_id)
     } catch (err) {
-      setError(String(err))
+      showToast(String(err))
       setDeleting(false)
     }
   }
@@ -64,13 +66,11 @@ export function ToolInstanceView({ tool, personas, catalog, onUpdated, onDeleted
           <button type="button" className="link-button" onClick={() => setEditing(true)} disabled={!definition}>
             Edit
           </button>
-          <button type="button" className="link-button" onClick={handleDelete} disabled={deleting}>
+          <button type="button" className="link-button danger" onClick={handleDelete} disabled={deleting}>
             {deleting ? 'Deleting…' : 'Delete'}
           </button>
         </div>
       </div>
-
-      {error && <p className="error">{error}</p>}
 
       {tool.destinations.length > 0 && (
         <dl className="tool-config-list">

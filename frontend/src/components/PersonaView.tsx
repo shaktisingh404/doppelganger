@@ -1,5 +1,7 @@
 import { useState } from 'react'
-import { deletePersona, updatePersona, updatePersonaTools } from '../api'
+import { deletePersona, disableSharing, enableSharing, updatePersona, updatePersonaTools } from '../api'
+import { useConfirm } from './ConfirmDialog'
+import { useToast } from './Toast'
 import type { ActivatedTool, AssembledPersona } from '../types'
 
 interface Props {
@@ -7,15 +9,57 @@ interface Props {
   activatedTools: ActivatedTool[]
   onUpdated: (persona: AssembledPersona) => void
   onDeleted: (personaId: string) => void
+  chatOpen: boolean
+  onToggleChat: () => void
 }
 
-export function PersonaView({ persona, activatedTools, onUpdated, onDeleted }: Props) {
-  const [expanded, setExpanded] = useState(false)
-  const [editingTools, setEditingTools] = useState(false)
+type Tab = 'assistant' | 'tools' | 'share'
+
+const AssistantIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.5 4v-4H6.5A2.5 2.5 0 0 1 4 13.5v-8z" />
+  </svg>
+)
+
+const ToolsIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2-2 2.6-2.6z" />
+  </svg>
+)
+
+const LinkIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M9 17H7a5 5 0 1 1 0-10h2M15 7h2a5 5 0 1 1 0 10h-2M8 12h8" />
+  </svg>
+)
+
+const ExpandIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3m11-5v3a2 2 0 0 1-2 2h-3" />
+  </svg>
+)
+
+const CopyIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="9" y="9" width="11" height="11" rx="2" />
+    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+  </svg>
+)
+
+export function PersonaView({ persona, activatedTools, onUpdated, onDeleted, chatOpen, onToggleChat }: Props) {
+  const confirm = useConfirm()
+  const showToast = useToast()
+
+  const [tab, setTab] = useState<Tab>('assistant')
+  const [promptExpanded, setPromptExpanded] = useState(false)
+  const [idCopied, setIdCopied] = useState(false)
+
   const [selectedToolIds, setSelectedToolIds] = useState<string[]>(persona.tool_instance_ids)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [savingTools, setSavingTools] = useState(false)
   const [deleting, setDeleting] = useState(false)
+
+  const [sharing, setSharing] = useState(false)
+  const [linkCopied, setLinkCopied] = useState(false)
 
   const [editingPersona, setEditingPersona] = useState(false)
   const [editName, setEditName] = useState(persona.name)
@@ -24,12 +68,14 @@ export function PersonaView({ persona, activatedTools, onUpdated, onDeleted }: P
   const [savingPersona, setSavingPersona] = useState(false)
   const [personaError, setPersonaError] = useState<string | null>(null)
 
-  const attachedTools = activatedTools.filter((t) => persona.tool_instance_ids.includes(t.tool_instance_id))
+  const toolsChanged =
+    selectedToolIds.length !== persona.tool_instance_ids.length ||
+    selectedToolIds.some((id) => !persona.tool_instance_ids.includes(id))
 
-  function startEditing() {
+  function switchTab(next: Tab) {
+    setTab(next)
+    setEditingPersona(false)
     setSelectedToolIds(persona.tool_instance_ids)
-    setEditingTools(true)
-    setError(null)
   }
 
   function toggleTool(toolInstanceId: string) {
@@ -39,30 +85,67 @@ export function PersonaView({ persona, activatedTools, onUpdated, onDeleted }: P
   }
 
   async function saveTools() {
-    setSaving(true)
-    setError(null)
+    setSavingTools(true)
     try {
       const updated = await updatePersonaTools(persona.persona_id, { tool_instance_ids: selectedToolIds })
       onUpdated(updated)
-      setEditingTools(false)
     } catch (err) {
-      setError(String(err))
+      showToast(String(err))
     } finally {
-      setSaving(false)
+      setSavingTools(false)
     }
   }
 
   async function handleDelete() {
-    if (!window.confirm(`Delete "${persona.name}"? This can't be undone.`)) return
+    if (!(await confirm({ message: `Delete "${persona.name}"? This can't be undone.`, confirmLabel: 'Delete', danger: true }))) return
     setDeleting(true)
-    setError(null)
     try {
       await deletePersona(persona.persona_id)
       onDeleted(persona.persona_id)
     } catch (err) {
-      setError(String(err))
+      showToast(String(err))
       setDeleting(false)
     }
+  }
+
+  const shareUrl = persona.share_token ? `${window.location.origin}/share/${persona.share_token}` : null
+
+  async function handleEnableShare() {
+    setSharing(true)
+    try {
+      const { share_token } = await enableSharing(persona.persona_id)
+      onUpdated({ ...persona, share_token })
+    } catch (err) {
+      showToast(String(err))
+    } finally {
+      setSharing(false)
+    }
+  }
+
+  async function handleDisableShare() {
+    if (!(await confirm('Disable the public link? It will stop working immediately.'))) return
+    setSharing(true)
+    try {
+      await disableSharing(persona.persona_id)
+      onUpdated({ ...persona, share_token: null })
+    } catch (err) {
+      showToast(String(err))
+    } finally {
+      setSharing(false)
+    }
+  }
+
+  async function handleCopyLink() {
+    if (!shareUrl) return
+    await navigator.clipboard.writeText(shareUrl)
+    setLinkCopied(true)
+    setTimeout(() => setLinkCopied(false), 1500)
+  }
+
+  async function handleCopyId() {
+    await navigator.clipboard.writeText(persona.persona_id)
+    setIdCopied(true)
+    setTimeout(() => setIdCopied(false), 1500)
   }
 
   function startEditingPersona() {
@@ -92,86 +175,138 @@ export function PersonaView({ persona, activatedTools, onUpdated, onDeleted }: P
     }
   }
 
-  if (editingPersona) {
-    return (
-      <form className="editor" onSubmit={savePersona}>
-        <div className="editor-top-row">
+  const shortId = `${persona.persona_id.slice(0, 8)}…${persona.persona_id.slice(-6)}`
+
+  return (
+    <div className="persona-view">
+      <div className="persona-header">
+        {editingPersona ? (
           <input
             className="editor-name-input"
             value={editName}
             onChange={(e) => setEditName(e.target.value)}
             required
             placeholder="Assistant name"
+            form="persona-edit-form"
           />
-          <div className="editor-top-actions">
-            <button type="button" className="link-button" onClick={() => setEditingPersona(false)}>
-              Cancel
-            </button>
-            <button type="submit" className="primary" disabled={savingPersona || !editSystemPrompt.trim()}>
-              {savingPersona ? 'Saving…' : 'Save'}
+        ) : (
+          <div className="persona-view-identity">
+            <h2>{persona.name}</h2>
+            <span className="badge">{persona.archetype_id ?? 'custom'}</span>
+            <button type="button" className="badge badge-id" onClick={handleCopyId} title="Copy assistant ID">
+              {idCopied ? 'Copied!' : shortId}
+              <CopyIcon />
             </button>
           </div>
-        </div>
+        )}
 
-        <label>
-          First Message <span className="muted">(assistant speaks first — optional)</span>
-          <textarea value={editFirstMessage} onChange={(e) => setEditFirstMessage(e.target.value)} rows={2} />
-        </label>
-
-        <label>
-          System Prompt
-          <textarea
-            className="system-prompt-input"
-            value={editSystemPrompt}
-            onChange={(e) => setEditSystemPrompt(e.target.value)}
-            rows={14}
-            required
-          />
-        </label>
-
-        {personaError && <p className="error">{personaError}</p>}
-      </form>
-    )
-  }
-
-  return (
-    <div className="persona-view">
-      <div className="persona-header">
-        <div>
-          <h2>{persona.name}</h2>
-          <p className="muted">archetype: {persona.archetype_id ?? 'custom'}</p>
-        </div>
         <div className="editor-top-actions">
-          <button type="button" className="link-button" onClick={() => setExpanded((v) => !v)}>
-            {expanded ? 'Hide system prompt' : 'Show system prompt'}
+          <button
+            type="button"
+            className={`chat-toggle-btn${chatOpen ? ' active' : ''}`}
+            onClick={onToggleChat}
+            aria-pressed={chatOpen}
+          >
+            <AssistantIcon /> {chatOpen ? 'Hide Chat' : 'Chat'}
           </button>
-          <button type="button" className="link-button" onClick={startEditingPersona}>
-            Edit
-          </button>
-          <button type="button" className="link-button" onClick={handleDelete} disabled={deleting}>
-            {deleting ? 'Deleting…' : 'Delete'}
-          </button>
+          {editingPersona ? (
+            <>
+              <button type="button" className="link-button" onClick={() => setEditingPersona(false)}>
+                Cancel
+              </button>
+              <button
+                type="submit"
+                form="persona-edit-form"
+                className="primary"
+                disabled={savingPersona || !editSystemPrompt.trim()}
+              >
+                {savingPersona ? 'Saving…' : 'Save'}
+              </button>
+            </>
+          ) : (
+            <>
+              <button type="button" className="link-button" onClick={startEditingPersona}>
+                Edit
+              </button>
+              <button type="button" className="link-button danger" onClick={handleDelete} disabled={deleting}>
+                {deleting ? 'Deleting…' : 'Delete'}
+              </button>
+            </>
+          )}
         </div>
       </div>
-      {error && !editingTools && <p className="error">{error}</p>}
-      {persona.first_message && (
-        <p className="persona-first-message">
-          <span className="muted">First message:</span> {persona.first_message}
-        </p>
-      )}
 
-      {!editingTools && (
-        <p className="persona-first-message">
-          <span className="muted">Tools:</span> {attachedTools.length > 0 ? attachedTools.map((t) => t.name).join(', ') : 'none'}{' '}
-          <button type="button" className="link-button inline-link-button" onClick={startEditing}>
-            Edit
-          </button>
-        </p>
-      )}
+      <nav className="detail-tabs">
+        <button type="button" className={`detail-tab${tab === 'assistant' ? ' active' : ''}`} onClick={() => switchTab('assistant')}>
+          <AssistantIcon /> Assistant
+        </button>
+        <button type="button" className={`detail-tab${tab === 'tools' ? ' active' : ''}`} onClick={() => switchTab('tools')}>
+          <ToolsIcon /> Tools{persona.tool_instance_ids.length > 0 ? ` (${persona.tool_instance_ids.length})` : ''}
+        </button>
+        <button type="button" className={`detail-tab${tab === 'share' ? ' active' : ''}`} onClick={() => switchTab('share')}>
+          <LinkIcon /> Share
+        </button>
+      </nav>
 
-      {editingTools && (
-        <div className="tools-section persona-tools-edit">
-          <div className="field-label-row-static">Tools</div>
+      {tab === 'assistant' &&
+        (editingPersona ? (
+          <form id="persona-edit-form" onSubmit={savePersona}>
+            <div className="section-block">
+              <div className="section-label-row">
+                <span className="section-label">First Message</span>
+                <span className="muted">assistant speaks first — optional</span>
+              </div>
+              <textarea value={editFirstMessage} onChange={(e) => setEditFirstMessage(e.target.value)} rows={2} />
+            </div>
+
+            <div className="section-block">
+              <div className="section-label-row">
+                <span className="section-label">System Prompt</span>
+              </div>
+              <textarea
+                className="prompt-box"
+                value={editSystemPrompt}
+                onChange={(e) => setEditSystemPrompt(e.target.value)}
+                rows={16}
+                required
+              />
+            </div>
+
+            {personaError && <p className="error">{personaError}</p>}
+          </form>
+        ) : (
+          <>
+            <div className="section-block">
+              <div className="section-label-row">
+                <span className="section-label">First Message</span>
+              </div>
+              {persona.first_message ? (
+                <p className="persona-first-message">{persona.first_message}</p>
+              ) : (
+                <p className="muted">No first message — the assistant waits for the caller to speak first.</p>
+              )}
+            </div>
+
+            <div className="section-block">
+              <div className="section-label-row">
+                <span className="section-label">System Prompt</span>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={() => setPromptExpanded((v) => !v)}
+                  aria-label={promptExpanded ? 'Collapse' : 'Expand'}
+                  title={promptExpanded ? 'Collapse' : 'Expand'}
+                >
+                  <ExpandIcon />
+                </button>
+              </div>
+              <pre className={`prompt-box${promptExpanded ? ' expanded' : ''}`}>{persona.system_prompt}</pre>
+            </div>
+          </>
+        ))}
+
+      {tab === 'tools' && (
+        <div className="section-block tools-section">
           {activatedTools.length === 0 ? (
             <p className="muted">No tools activated yet — activate one from the Tools section in the sidebar.</p>
           ) : (
@@ -188,19 +323,36 @@ export function PersonaView({ persona, activatedTools, onUpdated, onDeleted }: P
               ))}
             </div>
           )}
-          {error && <p className="error">{error}</p>}
           <div className="editor-top-actions">
-            <button type="button" className="link-button" onClick={() => setEditingTools(false)}>
-              Cancel
-            </button>
-            <button type="button" className="primary" onClick={saveTools} disabled={saving}>
-              {saving ? 'Saving…' : 'Save'}
+            <button type="button" className="primary" onClick={saveTools} disabled={savingTools || !toolsChanged}>
+              {savingTools ? 'Saving…' : 'Save'}
             </button>
           </div>
         </div>
       )}
 
-      {expanded && <pre className="system-prompt">{persona.system_prompt}</pre>}
+      {tab === 'share' && (
+        <div className="section-block">
+          {shareUrl ? (
+            <div className="share-link-row">
+              <input className="share-link-input" value={shareUrl} readOnly onFocus={(e) => e.target.select()} />
+              <button type="button" className="link-button" onClick={handleCopyLink}>
+                {linkCopied ? 'Copied!' : 'Copy'}
+              </button>
+              <button type="button" className="link-button danger" onClick={handleDisableShare} disabled={sharing}>
+                Disable
+              </button>
+            </div>
+          ) : (
+            <div className="share-link-row">
+              <p className="muted">Let anyone with this link chat with {persona.name} — no login, no system prompt visible.</p>
+              <button type="button" className="link-button" onClick={handleEnableShare} disabled={sharing}>
+                {sharing ? 'Enabling…' : 'Enable public link'}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

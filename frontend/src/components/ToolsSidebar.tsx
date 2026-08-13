@@ -21,7 +21,7 @@ export function ToolsSidebar({ catalog, activatedTools, selectedId, onSelect, on
 
       <div className="create-assistant">
         <button type="button" className="primary create-btn" onClick={() => setMenuOpen((v) => !v)}>
-          + Activate Tool
+          <span aria-hidden="true">+</span> Activate Tool
         </button>
         {menuOpen && (
           <div className="create-menu">
@@ -37,11 +37,11 @@ export function ToolsSidebar({ catalog, activatedTools, selectedId, onSelect, on
                   setMenuOpen(false)
                 }}
               >
-                <span className="create-menu-item-title">
-                  {t.display_name}
-                  {t.status !== 'available' && <span className="muted"> — coming soon</span>}
+                <span className="create-menu-item-title">{t.display_name}</span>
+                <span className="create-menu-item-sub">
+                  {t.category}
+                  {t.status !== 'available' && <span className={`status-pill ${t.status}`}>coming soon</span>}
                 </span>
-                <span className="create-menu-item-sub">{t.category}</span>
               </button>
             ))}
           </div>
@@ -57,8 +57,11 @@ export function ToolsSidebar({ catalog, activatedTools, selectedId, onSelect, on
             className={`assistant-list-item${t.tool_instance_id === selectedId ? ' selected' : ''}`}
             onClick={() => onSelect(t)}
           >
-            <span className="assistant-list-item-name">{t.name}</span>
-            <span className="assistant-list-item-sub">{t.tool_id}</span>
+            <div className="list-item-avatar">{t.name[0]}</div>
+            <span className="assistant-list-item-select">
+              <span className="assistant-list-item-name">{t.name}</span>
+              <span className="assistant-list-item-sub">{t.tool_id}</span>
+            </span>
           </button>
         ))}
       </div>

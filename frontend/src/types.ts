@@ -47,6 +47,9 @@ export interface AssembledPersona {
   version: string
   created_at: string
   tool_instance_ids: string[]
+  // Non-null means a public chat link is live for this persona — see
+  // ShareLinkResponse / PublicPersonaInfo below.
+  share_token?: string | null
 }
 
 // POST /personas/generate response — text only, nothing stored yet.
@@ -139,4 +142,20 @@ export interface AuthToken {
   access_token: string
   token_type: string
   user: UserPublic
+}
+
+// Mirrors the new share-link/public-chat shapes in backend/app/schemas.py.
+
+export interface ShareLinkResponse {
+  share_token: string
+}
+
+// What an anonymous visitor is allowed to know about a shared persona —
+// deliberately just the name, nothing persona-internal.
+export interface PublicPersonaInfo {
+  name: string
+}
+
+export interface PublicSessionResponse {
+  session_id: string
 }

@@ -8,6 +8,9 @@ import type {
   CreatePersonaRequest,
   GeneratePromptResponse,
   InstanceInput,
+  PublicPersonaInfo,
+  PublicSessionResponse,
+  ShareLinkResponse,
   ToolDefinition,
   UpdatePersonaRequest,
   UpdatePersonaToolsRequest,
@@ -92,6 +95,14 @@ export function deletePersona(personaId: string): Promise<void> {
   return request(`/personas/${personaId}`, { method: 'DELETE' })
 }
 
+export function enableSharing(personaId: string): Promise<ShareLinkResponse> {
+  return request(`/personas/${personaId}/share`, { method: 'POST' })
+}
+
+export function disableSharing(personaId: string): Promise<void> {
+  return request(`/personas/${personaId}/share`, { method: 'DELETE' })
+}
+
 export function sendChatMessage(personaId: string, message: string): Promise<{ reply: string }> {
   return request(`/personas/${personaId}/chat`, {
     method: 'POST',
@@ -121,4 +132,43 @@ export function updateTool(toolInstanceId: string, input: UpdateToolRequest): Pr
 
 export function deleteTool(toolInstanceId: string): Promise<void> {
   return request(`/tools/${toolInstanceId}`, { method: 'DELETE' })
+}
+
+// --- Public share-link chat -------------------------------------------
+// Deliberately separate from request() above: a public chat page has no
+// auth token to attach and no session to expire, so it must never send
+// an Authorization header (there's nothing to send, and no owner token
+// should ever reach a page a stranger can open) and never trigger the
+// onUnauthorized redirect (a public visitor was never "logged in" to be
+// logged out of).
+
+async function publicRequest<T>(path: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    headers: { 'Content-Type': 'application/json' },
+    ...options,
+  })
+  if (!res.ok) {
+    const detail = await res.text()
+    throw new Error(`${res.status} ${res.statusText}: ${detail}`)
+  }
+  return res.json() as Promise<T>
+}
+
+export function getPublicPersona(shareToken: string): Promise<PublicPersonaInfo> {
+  return publicRequest(`/public/${shareToken}`)
+}
+
+export function createPublicSession(shareToken: string): Promise<PublicSessionResponse> {
+  return publicRequest(`/public/${shareToken}/session`, { method: 'POST' })
+}
+
+export function sendPublicChatMessage(shareToken: string, sessionId: string, message: string): Promise<{ reply: string }> {
+  return publicRequest(`/public/${shareToken}/chat`, {
+    method: 'POST',
+    body: JSON.stringify({ session_id: sessionId, message }),
+  })
+}
+
+export function getPublicChatHistory(shareToken: string, sessionId: string): Promise<ChatMessage[]> {
+  return publicRequest(`/public/${shareToken}/chat/history?session_id=${encodeURIComponent(sessionId)}`)
 }

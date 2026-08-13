@@ -2,8 +2,10 @@ import { useEffect, useState } from 'react'
 import { AssistantSidebar } from './components/AssistantSidebar'
 import { AssistantEditor } from './components/AssistantEditor'
 import { AuthView } from './components/AuthView'
+import { ConfirmProvider } from './components/ConfirmDialog'
 import { PersonaView } from './components/PersonaView'
 import { ChatPanel } from './components/ChatPanel'
+import { ToastProvider } from './components/Toast'
 import { ToolsSidebar } from './components/ToolsSidebar'
 import { ToolActivationForm } from './components/ToolActivationForm'
 import { ToolInstanceView } from './components/ToolInstanceView'
@@ -20,6 +22,24 @@ import {
 import type { ActivatedTool, ArchetypeSpec, AssembledPersona, ToolDefinition, UserPublic } from './types'
 
 type View = 'assistants' | 'tools'
+
+const ChatIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.5 4v-4H6.5A2.5 2.5 0 0 1 4 13.5v-8z" />
+  </svg>
+)
+
+const ToolsIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2-2 2.6-2.6z" />
+  </svg>
+)
+
+const MenuIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+    <path d="M4 6h16M4 12h16M4 18h16" />
+  </svg>
+)
 
 function App() {
   const [user, setUser] = useState<UserPublic | null>(null)
@@ -48,9 +68,14 @@ function App() {
   }
 
   if (!authChecked) return null
-  if (!user) return <AuthView onAuthenticated={setUser} />
 
-  return <AuthenticatedApp user={user} onLogout={handleLogout} />
+  return (
+    <ToastProvider>
+      <ConfirmProvider>
+        {user ? <AuthenticatedApp user={user} onLogout={handleLogout} /> : <AuthView onAuthenticated={setUser} />}
+      </ConfirmProvider>
+    </ToastProvider>
+  )
 }
 
 function AuthenticatedApp({ user, onLogout }: { user: UserPublic; onLogout: () => void }) {
@@ -65,7 +90,15 @@ function AuthenticatedApp({ user, onLogout }: { user: UserPublic; onLogout: () =
   const [selectedTool, setSelectedTool] = useState<ActivatedTool | null>(null)
   const [activatingFrom, setActivatingFrom] = useState<ToolDefinition | null>(null)
 
+  const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
+  // Lives here, not in PersonaView, since it's a sibling to ChatPanel --
+  // both are rendered by this component. Not reset on persona switch
+  // (the "stage" div below is remounted via key={selected.persona_id},
+  // but this state lives above that remount boundary) -- if you had chat
+  // open, it stays open when you pick a different assistant.
+  const [chatOpen, setChatOpen] = useState(true)
 
   useEffect(() => {
     Promise.all([listArchetypes(), listPersonas(), listToolCatalog(), listActivatedTools()])
@@ -76,7 +109,13 @@ function AuthenticatedApp({ user, onLogout }: { user: UserPublic; onLogout: () =
         setActivatedTools(at)
       })
       .catch((e) => setLoadError(String(e)))
+      .finally(() => setLoading(false))
   }, [])
+
+  function switchView(next: View) {
+    setView(next)
+    setMobileNavOpen(false)
+  }
 
   function handleCreated(persona: AssembledPersona) {
     setPersonas((prev) => [...prev, persona])
@@ -125,25 +164,36 @@ function AuthenticatedApp({ user, onLogout }: { user: UserPublic; onLogout: () =
 
   return (
     <div className="app-shell-split">
-      <aside className="sidebar">
-        <nav className="view-tabs">
-          <button
-            type="button"
-            className={`view-tab${view === 'assistants' ? ' active' : ''}`}
-            onClick={() => setView('assistants')}
-          >
-            Assistants
-          </button>
-          <button
-            type="button"
-            className={`view-tab${view === 'tools' ? ' active' : ''}`}
-            onClick={() => setView('tools')}
-          >
-            Tools
-          </button>
-        </nav>
+      <nav className="nav-rail">
+        <div className="nav-rail-brand">D</div>
+        <button
+          type="button"
+          className={`nav-rail-item${view === 'assistants' ? ' active' : ''}`}
+          onClick={() => switchView('assistants')}
+        >
+          <ChatIcon />
+          <span>Assistants</span>
+        </button>
+        <button
+          type="button"
+          className={`nav-rail-item${view === 'tools' ? ' active' : ''}`}
+          onClick={() => switchView('tools')}
+        >
+          <ToolsIcon />
+          <span>Tools</span>
+        </button>
+      </nav>
 
-        {view === 'assistants' ? (
+      <div className={`sidebar-scrim${mobileNavOpen ? ' visible' : ''}`} onClick={() => setMobileNavOpen(false)} />
+
+      <aside className={`sidebar${mobileNavOpen ? ' mobile-open' : ''}`}>
+        {loading ? (
+          <div>
+            <div className="skeleton skeleton-list-item" />
+            <div className="skeleton skeleton-list-item" />
+            <div className="skeleton skeleton-list-item" />
+          </div>
+        ) : view === 'assistants' ? (
           <AssistantSidebar
             personas={personas}
             archetypes={archetypes}
@@ -151,10 +201,12 @@ function AuthenticatedApp({ user, onLogout }: { user: UserPublic; onLogout: () =
             onSelect={(p) => {
               setSelected(p)
               setCreatingFrom(null)
+              setMobileNavOpen(false)
             }}
             onCreateFromArchetype={(a) => {
               setCreatingFrom(a)
               setSelected(null)
+              setMobileNavOpen(false)
             }}
             onRenamed={handlePersonaUpdated}
           />
@@ -166,10 +218,12 @@ function AuthenticatedApp({ user, onLogout }: { user: UserPublic; onLogout: () =
             onSelect={(t) => {
               setSelectedTool(t)
               setActivatingFrom(null)
+              setMobileNavOpen(false)
             }}
             onActivateFromCatalog={(def) => {
               setActivatingFrom(def)
               setSelectedTool(null)
+              setMobileNavOpen(false)
             }}
           />
         )}
@@ -177,11 +231,17 @@ function AuthenticatedApp({ user, onLogout }: { user: UserPublic; onLogout: () =
 
       <main className="main-panel">
         <header className="app-header app-header-row">
-          <div>
-            <h1 className="brand">Doppelganger</h1>
-            <p className="muted">Dynamic persona voice service — build a persona, then talk to it.</p>
+          <div className="app-header-title-row">
+            <button type="button" className="mobile-nav-toggle" onClick={() => setMobileNavOpen((v) => !v)} aria-label="Menu">
+              <MenuIcon />
+            </button>
+            <div>
+              <h1 className="brand">Doppelganger</h1>
+              <p className="muted">Dynamic persona voice service — build a persona, then talk to it.</p>
+            </div>
           </div>
           <div className="app-header-user">
+            <div className="app-header-user-avatar">{user.email[0]}</div>
             <span className="muted">{user.email}</span>
             <button type="button" className="link-button" onClick={onLogout}>
               Log out
@@ -211,18 +271,29 @@ function AuthenticatedApp({ user, onLogout }: { user: UserPublic; onLogout: () =
               // subtree — ChatPanel's message state must not carry over from
               // the previously selected persona.
               <div className="stage" key={selected.persona_id}>
-                <PersonaView
-                  persona={selected}
-                  activatedTools={activatedTools}
-                  onUpdated={handlePersonaUpdated}
-                  onDeleted={handlePersonaDeleted}
-                />
-                <ChatPanel personaId={selected.persona_id} personaName={selected.name} />
+                <div className="stage-main">
+                  <PersonaView
+                    persona={selected}
+                    activatedTools={activatedTools}
+                    onUpdated={handlePersonaUpdated}
+                    onDeleted={handlePersonaDeleted}
+                    chatOpen={chatOpen}
+                    onToggleChat={() => setChatOpen((v) => !v)}
+                  />
+                </div>
+                {chatOpen && (
+                  <div className="stage-chat">
+                    <ChatPanel personaId={selected.persona_id} personaName={selected.name} />
+                  </div>
+                )}
               </div>
             )}
 
-            {!creatingFrom && !selected && (
+            {!creatingFrom && !selected && !loading && (
               <div className="empty-state">
+                <div className="empty-state-icon">
+                  <ChatIcon />
+                </div>
                 <p className="muted">Select an assistant on the left, or create a new one from a prebuilt persona.</p>
               </div>
             )}
@@ -251,8 +322,11 @@ function AuthenticatedApp({ user, onLogout }: { user: UserPublic; onLogout: () =
               />
             )}
 
-            {!activatingFrom && !selectedTool && (
+            {!activatingFrom && !selectedTool && !loading && (
               <div className="empty-state">
+                <div className="empty-state-icon">
+                  <ToolsIcon />
+                </div>
                 <p className="muted">Select a tool on the left, or activate one from the prebuilt catalog.</p>
               </div>
             )}

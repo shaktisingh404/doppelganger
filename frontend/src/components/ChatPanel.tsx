@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { getChatHistory, sendChatMessage } from '../api'
+import { useToast } from './Toast'
 import type { ChatMessage } from '../types'
 
 const HISTORY_POLL_MS = 4000
@@ -10,10 +11,11 @@ interface Props {
 }
 
 export function ChatPanel({ personaId, personaName }: Props) {
+  const showToast = useToast()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -26,7 +28,7 @@ export function ChatPanel({ personaId, personaName }: Props) {
   useEffect(() => {
     getChatHistory(personaId)
       .then(setMessages)
-      .catch((e) => setError(String(e)))
+      .catch((e) => setLoadError(String(e)))
   }, [personaId])
 
   // Picks up messages the persona sends on its own, e.g. a fired scheduled
@@ -49,7 +51,6 @@ export function ChatPanel({ personaId, personaName }: Props) {
     const text = input.trim()
     if (!text || sending) return
 
-    setError(null)
     setInput('')
     setMessages((prev) => [...prev, { role: 'user', content: text }])
     setSending(true)
@@ -57,7 +58,7 @@ export function ChatPanel({ personaId, personaName }: Props) {
       const { reply } = await sendChatMessage(personaId, text)
       setMessages((prev) => [...prev, { role: 'assistant', content: reply }])
     } catch (err) {
-      setError(String(err))
+      showToast(String(err))
     } finally {
       setSending(false)
     }
@@ -81,11 +82,17 @@ export function ChatPanel({ personaId, personaName }: Props) {
             {m.content}
           </div>
         ))}
-        {sending && <div className="bubble assistant pending">…</div>}
+        {sending && (
+          <div className="bubble assistant pending">
+            <span />
+            <span />
+            <span />
+          </div>
+        )}
         <div ref={bottomRef} />
       </div>
 
-      {error && <p className="error">{error}</p>}
+      {loadError && <p className="error">{loadError}</p>}
 
       <div className="chat-input-row">
         <input

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { updatePersona } from '../api'
+import { useToast } from './Toast'
 import type { ArchetypeSpec, AssembledPersona } from '../types'
 
 interface Props {
@@ -19,15 +20,14 @@ export function AssistantSidebar({
   onCreateFromArchetype,
   onRenamed,
 }: Props) {
+  const showToast = useToast()
   const [menuOpen, setMenuOpen] = useState(false)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
-  const [renameError, setRenameError] = useState<string | null>(null)
 
   function startRename(p: AssembledPersona) {
     setRenamingId(p.persona_id)
     setRenameValue(p.name)
-    setRenameError(null)
   }
 
   async function commitRename(p: AssembledPersona) {
@@ -46,7 +46,7 @@ export function AssistantSidebar({
       onRenamed(updated)
       setRenamingId(null)
     } catch (err) {
-      setRenameError(String(err))
+      showToast(String(err))
     }
   }
 
@@ -59,7 +59,7 @@ export function AssistantSidebar({
 
       <div className="create-assistant">
         <button type="button" className="primary create-btn" onClick={() => setMenuOpen((v) => !v)}>
-          + Create Assistant
+          <span aria-hidden="true">+</span> Create Assistant
         </button>
         {menuOpen && (
           <div className="create-menu">
@@ -89,6 +89,7 @@ export function AssistantSidebar({
             key={p.persona_id}
             className={`assistant-list-item${p.persona_id === selectedId ? ' selected' : ''}`}
           >
+            <div className="list-item-avatar">{p.name[0]}</div>
             {renamingId === p.persona_id ? (
               <input
                 className="assistant-rename-input"
@@ -120,7 +121,6 @@ export function AssistantSidebar({
             )}
           </div>
         ))}
-        {renameError && <p className="error">{renameError}</p>}
       </div>
     </>
   )
