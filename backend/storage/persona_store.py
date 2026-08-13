@@ -4,6 +4,7 @@ state to encapsulate now that the DB session (passed in per call) carries
 it, matching the shape FastAPI's Depends(get_db) already gives every route.
 """
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,8 +28,14 @@ def _to_domain(row: PersonaRow) -> AssembledPersona:
 
 
 async def _get_row(db: AsyncSession, persona_id: uuid.UUID, user_id: uuid.UUID) -> PersonaRow | None:
+    # deleted_at.is_(None): a soft-deleted persona is invisible to every
+    # normal lookup, including get_effective()'s handoff-target resolution
+    # below, which is what makes deleting a handoff destination silently
+    # fall back to the thread's own persona rather than 500ing.
     return await db.scalar(
-        select(PersonaRow).where(PersonaRow.id == persona_id, PersonaRow.user_id == user_id)
+        select(PersonaRow).where(
+            PersonaRow.id == persona_id, PersonaRow.user_id == user_id, PersonaRow.deleted_at.is_(None)
+        )
     )
 
 
@@ -49,6 +56,22 @@ async def add(db: AsyncSession, persona: AssembledPersona, user_id: uuid.UUID) -
     # same history it already polls — no separate delivery path.
     if persona.first_message:
         await append_history(db, row.id, "assistant", persona.first_message)
+
+
+async def update(
+    db: AsyncSession, persona_id: uuid.UUID, user_id: uuid.UUID, *, name: str, system_prompt: str, first_message: str
+) -> AssembledPersona | None:
+    """Edits identity/prompt fields only — archetype_id and
+    tool_instance_ids each have their own dedicated update path (the
+    former is immutable, the latter is update_tools below)."""
+    row = await _get_row(db, persona_id, user_id)
+    if row is None:
+        return None
+    row.name = name
+    row.system_prompt = system_prompt
+    row.first_message = first_message
+    await db.flush()
+    return _to_domain(row)
 
 
 async def update_tools(
@@ -93,9 +116,37 @@ async def set_active(db: AsyncSession, persona_id: uuid.UUID, active_persona_id:
 
 async def list_all(db: AsyncSession, user_id: uuid.UUID) -> list[AssembledPersona]:
     result = await db.scalars(
-        select(PersonaRow).where(PersonaRow.user_id == user_id).order_by(PersonaRow.created_at)
+        select(PersonaRow)
+        .where(PersonaRow.user_id == user_id, PersonaRow.deleted_at.is_(None))
+        .order_by(PersonaRow.created_at)
     )
     return [_to_domain(r) for r in result]
+
+
+async def delete(db: AsyncSession, persona_id: uuid.UUID, user_id: uuid.UUID) -> bool:
+    row = await _get_row(db, persona_id, user_id)
+    if row is None:
+        return False
+    row.deleted_at = datetime.now(timezone.utc)
+    await db.flush()
+    return True
+
+
+async def detach_tool(db: AsyncSession, tool_instance_id: str, user_id: uuid.UUID) -> list[uuid.UUID]:
+    """Cascades a tool-instance deletion: strips its id from every one of
+    this user's personas that had it attached, so a deleted tool can't be
+    silently called from a stale attachment list. Returns the ids of the
+    personas actually changed."""
+    result = await db.scalars(
+        select(PersonaRow).where(PersonaRow.user_id == user_id, PersonaRow.deleted_at.is_(None))
+    )
+    changed = []
+    for row in result:
+        if tool_instance_id in row.tool_instance_ids:
+            row.tool_instance_ids = [t for t in row.tool_instance_ids if t != tool_instance_id]
+            changed.append(row.id)
+    await db.flush()
+    return changed
 
 
 async def get_history(db: AsyncSession, persona_id: uuid.UUID, user_id: uuid.UUID) -> list[dict[str, str]]:

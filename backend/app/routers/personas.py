@@ -20,6 +20,7 @@ from app.schemas import (
     ChatResponse,
     CreatePersonaRequest,
     GeneratePromptResponse,
+    UpdatePersonaRequest,
     UpdatePersonaToolsRequest,
 )
 from app.state import archetype_store
@@ -69,6 +70,32 @@ async def list_personas(db: AsyncSession = Depends(get_db), user: User = Depends
 @router.get("/{persona_id}", response_model=AssembledPersona)
 async def get_persona(persona: AssembledPersona = Depends(require_persona)):
     return persona
+
+
+@router.put("/{persona_id}", response_model=AssembledPersona)
+async def update_persona(
+    req: UpdatePersonaRequest,
+    persona: AssembledPersona = Depends(require_persona),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    return await persona_store.update(
+        db, uuid.UUID(persona.persona_id), user.id,
+        name=req.name, system_prompt=req.system_prompt, first_message=req.first_message,
+    )
+
+
+@router.delete("/{persona_id}", status_code=204)
+async def delete_persona(
+    persona: AssembledPersona = Depends(require_persona),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Soft delete — see storage/persona_store.py::delete. A persona used
+    as a handoff destination elsewhere just stops resolving as one
+    (tools/handoff.py already skips unresolvable destinations); no cascade
+    needed on this side."""
+    await persona_store.delete(db, uuid.UUID(persona.persona_id), user.id)
 
 
 @router.put("/{persona_id}/tools", response_model=AssembledPersona)

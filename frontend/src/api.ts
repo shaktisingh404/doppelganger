@@ -9,7 +9,9 @@ import type {
   GeneratePromptResponse,
   InstanceInput,
   ToolDefinition,
+  UpdatePersonaRequest,
   UpdatePersonaToolsRequest,
+  UpdateToolRequest,
   UserPublic,
 } from './types'
 
@@ -46,6 +48,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     const detail = await res.text()
     throw new Error(`${res.status} ${res.statusText}: ${detail}`)
   }
+  if (res.status === 204) return undefined as T
   return res.json() as Promise<T>
 }
 
@@ -77,8 +80,16 @@ export function createPersona(input: CreatePersonaRequest): Promise<AssembledPer
   return request('/personas', { method: 'POST', body: JSON.stringify(input) })
 }
 
+export function updatePersona(personaId: string, input: UpdatePersonaRequest): Promise<AssembledPersona> {
+  return request(`/personas/${personaId}`, { method: 'PUT', body: JSON.stringify(input) })
+}
+
 export function updatePersonaTools(personaId: string, input: UpdatePersonaToolsRequest): Promise<AssembledPersona> {
   return request(`/personas/${personaId}/tools`, { method: 'PUT', body: JSON.stringify(input) })
+}
+
+export function deletePersona(personaId: string): Promise<void> {
+  return request(`/personas/${personaId}`, { method: 'DELETE' })
 }
 
 export function sendChatMessage(personaId: string, message: string): Promise<{ reply: string }> {
@@ -102,4 +113,12 @@ export function listActivatedTools(): Promise<ActivatedTool[]> {
 
 export function activateTool(input: ActivateToolRequest): Promise<ActivatedTool> {
   return request('/tools', { method: 'POST', body: JSON.stringify(input) })
+}
+
+export function updateTool(toolInstanceId: string, input: UpdateToolRequest): Promise<ActivatedTool> {
+  return request(`/tools/${toolInstanceId}`, { method: 'PUT', body: JSON.stringify(input) })
+}
+
+export function deleteTool(toolInstanceId: string): Promise<void> {
+  return request(`/tools/${toolInstanceId}`, { method: 'DELETE' })
 }

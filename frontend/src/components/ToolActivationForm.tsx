@@ -1,24 +1,29 @@
 import { useState } from 'react'
-import { activateTool } from '../api'
+import { activateTool, updateTool } from '../api'
 import type { ActivatedTool, AssembledPersona, HandoffDestination, ToolDefinition } from '../types'
 
 interface Props {
   definition: ToolDefinition
   personas: AssembledPersona[]
-  onActivated: (tool: ActivatedTool) => void
+  // Present -> editing this instance (PUT); absent -> activating a new one (POST).
+  existing?: ActivatedTool
+  onSaved: (tool: ActivatedTool) => void
   onCancel: () => void
 }
 
 const EMPTY_DESTINATION: HandoffDestination = { persona_id: '', description: '' }
 
-export function ToolActivationForm({ definition, personas, onActivated, onCancel }: Props) {
-  const [name, setName] = useState(definition.display_name)
-  const [config, setConfig] = useState<Record<string, string>>({})
-  const [destinations, setDestinations] = useState<HandoffDestination[]>([{ ...EMPTY_DESTINATION }])
-  const [activating, setActivating] = useState(false)
+export function ToolActivationForm({ definition, personas, existing, onSaved, onCancel }: Props) {
+  const [name, setName] = useState(existing?.name ?? definition.display_name)
+  const [config, setConfig] = useState<Record<string, string>>(existing?.config ?? {})
+  const [destinations, setDestinations] = useState<HandoffDestination[]>(
+    existing?.destinations && existing.destinations.length > 0 ? existing.destinations : [{ ...EMPTY_DESTINATION }]
+  )
+  const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const isHandoff = definition.id === 'handoff'
+  const isEditing = existing !== undefined
 
   const missingRequired = isHandoff
     ? destinations.some((d) => !d.persona_id || !d.description.trim())
@@ -34,19 +39,19 @@ export function ToolActivationForm({ definition, personas, onActivated, onCancel
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    setActivating(true)
+    setSaving(true)
     setError(null)
     try {
-      const tool = await activateTool(
-        isHandoff
-          ? { tool_id: definition.id, name, destinations }
-          : { tool_id: definition.id, name, config }
-      )
-      onActivated(tool)
+      const tool = existing
+        ? await updateTool(existing.tool_instance_id, isHandoff ? { name, destinations } : { name, config })
+        : await activateTool(
+            isHandoff ? { tool_id: definition.id, name, destinations } : { tool_id: definition.id, name, config }
+          )
+      onSaved(tool)
     } catch (err) {
       setError(String(err))
     } finally {
-      setActivating(false)
+      setSaving(false)
     }
   }
 
@@ -64,8 +69,8 @@ export function ToolActivationForm({ definition, personas, onActivated, onCancel
           <button type="button" className="link-button" onClick={onCancel}>
             Cancel
           </button>
-          <button type="submit" className="primary" disabled={activating || missingRequired}>
-            {activating ? 'Activating…' : 'Activate'}
+          <button type="submit" className="primary" disabled={saving || missingRequired}>
+            {saving ? 'Saving…' : isEditing ? 'Save' : 'Activate'}
           </button>
         </div>
       </div>

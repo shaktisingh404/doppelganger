@@ -52,6 +52,10 @@ class Persona(Base):
         ForeignKey("personas.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = _now()
+    # Soft delete: non-null means gone from every normal query (storage/
+    # persona_store.py filters on this), but the row (and its chat history)
+    # stays for audit/recovery rather than a hard DELETE.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ChatMessage(Base):
@@ -79,6 +83,8 @@ class ToolInstance(Base):
     # list[{"persona_id": str, "description": str}] — see tools/models.py::HandoffDestination
     destinations: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     created_at: Mapped[datetime] = _now()
+    # Soft delete, same rationale as Persona.deleted_at above.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ScheduledCall(Base):

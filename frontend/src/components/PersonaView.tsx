@@ -1,19 +1,28 @@
 import { useState } from 'react'
-import { updatePersonaTools } from '../api'
+import { deletePersona, updatePersona, updatePersonaTools } from '../api'
 import type { ActivatedTool, AssembledPersona } from '../types'
 
 interface Props {
   persona: AssembledPersona
   activatedTools: ActivatedTool[]
-  onToolsUpdated: (persona: AssembledPersona) => void
+  onUpdated: (persona: AssembledPersona) => void
+  onDeleted: (personaId: string) => void
 }
 
-export function PersonaView({ persona, activatedTools, onToolsUpdated }: Props) {
+export function PersonaView({ persona, activatedTools, onUpdated, onDeleted }: Props) {
   const [expanded, setExpanded] = useState(false)
   const [editingTools, setEditingTools] = useState(false)
   const [selectedToolIds, setSelectedToolIds] = useState<string[]>(persona.tool_instance_ids)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState(false)
+
+  const [editingPersona, setEditingPersona] = useState(false)
+  const [editName, setEditName] = useState(persona.name)
+  const [editFirstMessage, setEditFirstMessage] = useState(persona.first_message)
+  const [editSystemPrompt, setEditSystemPrompt] = useState(persona.system_prompt)
+  const [savingPersona, setSavingPersona] = useState(false)
+  const [personaError, setPersonaError] = useState<string | null>(null)
 
   const attachedTools = activatedTools.filter((t) => persona.tool_instance_ids.includes(t.tool_instance_id))
 
@@ -34,13 +43,95 @@ export function PersonaView({ persona, activatedTools, onToolsUpdated }: Props) 
     setError(null)
     try {
       const updated = await updatePersonaTools(persona.persona_id, { tool_instance_ids: selectedToolIds })
-      onToolsUpdated(updated)
+      onUpdated(updated)
       setEditingTools(false)
     } catch (err) {
       setError(String(err))
     } finally {
       setSaving(false)
     }
+  }
+
+  async function handleDelete() {
+    if (!window.confirm(`Delete "${persona.name}"? This can't be undone.`)) return
+    setDeleting(true)
+    setError(null)
+    try {
+      await deletePersona(persona.persona_id)
+      onDeleted(persona.persona_id)
+    } catch (err) {
+      setError(String(err))
+      setDeleting(false)
+    }
+  }
+
+  function startEditingPersona() {
+    setEditName(persona.name)
+    setEditFirstMessage(persona.first_message)
+    setEditSystemPrompt(persona.system_prompt)
+    setPersonaError(null)
+    setEditingPersona(true)
+  }
+
+  async function savePersona(e: React.FormEvent) {
+    e.preventDefault()
+    setSavingPersona(true)
+    setPersonaError(null)
+    try {
+      const updated = await updatePersona(persona.persona_id, {
+        name: editName,
+        system_prompt: editSystemPrompt,
+        first_message: editFirstMessage,
+      })
+      onUpdated(updated)
+      setEditingPersona(false)
+    } catch (err) {
+      setPersonaError(String(err))
+    } finally {
+      setSavingPersona(false)
+    }
+  }
+
+  if (editingPersona) {
+    return (
+      <form className="editor" onSubmit={savePersona}>
+        <div className="editor-top-row">
+          <input
+            className="editor-name-input"
+            value={editName}
+            onChange={(e) => setEditName(e.target.value)}
+            required
+            placeholder="Assistant name"
+          />
+          <div className="editor-top-actions">
+            <button type="button" className="link-button" onClick={() => setEditingPersona(false)}>
+              Cancel
+            </button>
+            <button type="submit" className="primary" disabled={savingPersona || !editSystemPrompt.trim()}>
+              {savingPersona ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </div>
+
+        <label>
+          First Message <span className="muted">(assistant speaks first — optional)</span>
+          <textarea value={editFirstMessage} onChange={(e) => setEditFirstMessage(e.target.value)} rows={2} />
+        </label>
+
+        <label>
+          System Prompt
+          <textarea
+            className="system-prompt-input"
+            value={editSystemPrompt}
+            onChange={(e) => setEditSystemPrompt(e.target.value)}
+            rows={14}
+            required
+          />
+        </label>
+
+        {personaError && <p className="error">{personaError}</p>}
+      </form>
+    )
   }
 
   return (
@@ -50,10 +141,19 @@ export function PersonaView({ persona, activatedTools, onToolsUpdated }: Props) 
           <h2>{persona.name}</h2>
           <p className="muted">archetype: {persona.archetype_id ?? 'custom'}</p>
         </div>
-        <button type="button" className="link-button" onClick={() => setExpanded((v) => !v)}>
-          {expanded ? 'Hide system prompt' : 'Show system prompt'}
-        </button>
+        <div className="editor-top-actions">
+          <button type="button" className="link-button" onClick={() => setExpanded((v) => !v)}>
+            {expanded ? 'Hide system prompt' : 'Show system prompt'}
+          </button>
+          <button type="button" className="link-button" onClick={startEditingPersona}>
+            Edit
+          </button>
+          <button type="button" className="link-button" onClick={handleDelete} disabled={deleting}>
+            {deleting ? 'Deleting…' : 'Delete'}
+          </button>
+        </div>
       </div>
+      {error && !editingTools && <p className="error">{error}</p>}
       {persona.first_message && (
         <p className="persona-first-message">
           <span className="muted">First message:</span> {persona.first_message}

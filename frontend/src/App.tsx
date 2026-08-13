@@ -90,9 +90,33 @@ function AuthenticatedApp({ user, onLogout }: { user: UserPublic; onLogout: () =
     setActivatingFrom(null)
   }
 
-  function handlePersonaToolsUpdated(persona: AssembledPersona) {
+  function handlePersonaUpdated(persona: AssembledPersona) {
     setPersonas((prev) => prev.map((p) => (p.persona_id === persona.persona_id ? persona : p)))
     setSelected(persona)
+  }
+
+  function handlePersonaDeleted(personaId: string) {
+    setPersonas((prev) => prev.filter((p) => p.persona_id !== personaId))
+    setSelected((prev) => (prev?.persona_id === personaId ? null : prev))
+  }
+
+  function handleToolUpdated(tool: ActivatedTool) {
+    setActivatedTools((prev) => prev.map((t) => (t.tool_instance_id === tool.tool_instance_id ? tool : t)))
+    setSelectedTool(tool)
+  }
+
+  function handleToolDeleted(toolInstanceId: string) {
+    setActivatedTools((prev) => prev.filter((t) => t.tool_instance_id !== toolInstanceId))
+    setSelectedTool((prev) => (prev?.tool_instance_id === toolInstanceId ? null : prev))
+    // Mirrors the backend's cascade-detach (app/routers/tools.py) so a
+    // persona's attached-tools list doesn't go stale until the next reload.
+    setPersonas((prev) =>
+      prev.map((p) =>
+        p.tool_instance_ids.includes(toolInstanceId)
+          ? { ...p, tool_instance_ids: p.tool_instance_ids.filter((id) => id !== toolInstanceId) }
+          : p
+      )
+    )
   }
 
   return (
@@ -182,7 +206,12 @@ function AuthenticatedApp({ user, onLogout }: { user: UserPublic; onLogout: () =
               // subtree — ChatPanel's message state must not carry over from
               // the previously selected persona.
               <div className="stage" key={selected.persona_id}>
-                <PersonaView persona={selected} activatedTools={activatedTools} onToolsUpdated={handlePersonaToolsUpdated} />
+                <PersonaView
+                  persona={selected}
+                  activatedTools={activatedTools}
+                  onUpdated={handlePersonaUpdated}
+                  onDeleted={handlePersonaDeleted}
+                />
                 <ChatPanel personaId={selected.persona_id} personaName={selected.name} />
               </div>
             )}
@@ -202,12 +231,20 @@ function AuthenticatedApp({ user, onLogout }: { user: UserPublic; onLogout: () =
                 key={activatingFrom.id}
                 definition={activatingFrom}
                 personas={personas}
-                onActivated={handleActivated}
+                onSaved={handleActivated}
                 onCancel={() => setActivatingFrom(null)}
               />
             )}
 
-            {!activatingFrom && selectedTool && <ToolInstanceView tool={selectedTool} personas={personas} />}
+            {!activatingFrom && selectedTool && (
+              <ToolInstanceView
+                tool={selectedTool}
+                personas={personas}
+                catalog={toolCatalog}
+                onUpdated={handleToolUpdated}
+                onDeleted={handleToolDeleted}
+              />
+            )}
 
             {!activatingFrom && !selectedTool && (
               <div className="empty-state">

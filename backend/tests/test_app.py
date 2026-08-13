@@ -123,6 +123,25 @@ with TestClient(app) as client:
     assert scratch_resp.status_code == 200, scratch_resp.text
     assert scratch_resp.json()["archetype_id"] is None
 
+    # --- PUT /personas/{id}: edit name/system_prompt/first_message -------
+
+    edit_resp = client.put(
+        f"/personas/{persona_id}",
+        json={"name": "Priya V2", "system_prompt": "You are an updated test persona.", "first_message": "Hi again!"},
+        headers=auth,
+    )
+    assert edit_resp.status_code == 200, edit_resp.text
+    edited = edit_resp.json()
+    assert edited["name"] == "Priya V2"
+    assert edited["system_prompt"] == "You are an updated test persona."
+    assert edited["first_message"] == "Hi again!"
+    assert edited["archetype_id"] == "receptionist"  # untouched by the edit
+    # persists -- GET reflects the edit, not just the response body
+    assert client.get(f"/personas/{persona_id}", headers=auth).json()["name"] == "Priya V2"
+
+    assert client.put("/personas/does-not-exist", json={"name": "X", "system_prompt": "x"}, headers=auth).status_code == 404
+    assert client.put(f"/personas/{persona_id}", json={"name": "X", "system_prompt": "x"}).status_code == 401
+
     # --- GET /personas: lists everything this user created, scoped by auth ---
 
     list_resp = client.get("/personas", headers=auth)
@@ -145,6 +164,14 @@ with TestClient(app) as client:
     assert client.get("/personas", headers=auth2).json() == []
     assert client.get(f"/personas/{persona_id}", headers=auth2).status_code == 404
     delete_test_user(user_id2)
+
+    # --- DELETE /personas/{id}: soft delete -- gone from list/get, 404 on redelete ---
+
+    del_resp = client.delete(f"/personas/{persona_id}", headers=auth)
+    assert del_resp.status_code == 204
+    assert client.get(f"/personas/{persona_id}", headers=auth).status_code == 404
+    assert persona_id not in {p["persona_id"] for p in client.get("/personas", headers=auth).json()}
+    assert client.delete(f"/personas/{persona_id}", headers=auth).status_code == 404
 
     delete_test_user(user_id)  # cascades: personas, chat_messages
 

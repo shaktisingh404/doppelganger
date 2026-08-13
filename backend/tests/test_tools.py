@@ -158,6 +158,85 @@ with TestClient(app) as client:
 
     print("cross-user scoping: ok")
 
+    # --- DELETE /tools/{id}: soft delete + cascade-detach from attached personas ---
+
+    doomed = client.post(
+        "/tools",
+        json={
+            "tool_id": "handoff",
+            "name": "Doomed",
+            "destinations": [{"persona_id": billing["persona_id"], "description": "x"}],
+        },
+        headers=auth,
+    ).json()
+    doomed_id = doomed["tool_instance_id"]
+
+    attached_a = client.post(
+        "/personas", json={"name": "A", "system_prompt": "test", "tool_instance_ids": [doomed_id]}, headers=auth
+    ).json()
+    attached_b = client.post(
+        "/personas", json={"name": "B", "system_prompt": "test", "tool_instance_ids": [doomed_id]}, headers=auth
+    ).json()
+    assert attached_a["tool_instance_ids"] == [doomed_id]
+    assert attached_b["tool_instance_ids"] == [doomed_id]
+
+    del_resp = client.delete(f"/tools/{doomed_id}", headers=auth)
+    assert del_resp.status_code == 204
+
+    # gone from the catalog of activated instances...
+    assert doomed_id not in {t["tool_instance_id"] for t in client.get("/tools", headers=auth).json()}
+    # ...and cascaded off of every persona that had it attached.
+    assert client.get(f"/personas/{attached_a['persona_id']}", headers=auth).json()["tool_instance_ids"] == []
+    assert client.get(f"/personas/{attached_b['persona_id']}", headers=auth).json()["tool_instance_ids"] == []
+
+    # re-delete / unknown id -> 404, not a 500.
+    assert client.delete(f"/tools/{doomed_id}", headers=auth).status_code == 404
+    assert client.delete("/tools/does-not-exist", headers=auth).status_code == 404
+
+    print("delete + cascade-detach: ok")
+
+    # --- PUT /tools/{id}: edit name/destinations, reusing activation validation ---
+
+    editable = client.post(
+        "/tools",
+        json={
+            "tool_id": "handoff",
+            "name": "Route v1",
+            "destinations": [{"persona_id": billing["persona_id"], "description": "v1"}],
+        },
+        headers=auth,
+    ).json()
+    editable_id = editable["tool_instance_id"]
+
+    edit_resp = client.put(
+        f"/tools/{editable_id}",
+        json={
+            "name": "Route v2",
+            "destinations": [{"persona_id": triage["persona_id"], "description": "v2"}],
+        },
+        headers=auth,
+    )
+    assert edit_resp.status_code == 200, edit_resp.text
+    edited = edit_resp.json()
+    assert edited["name"] == "Route v2"
+    assert edited["destinations"] == [{"persona_id": triage["persona_id"], "description": "v2"}]
+    # tool_id can't be smuggled through UpdateToolRequest -- there's no field for it
+    assert edited["tool_id"] == "handoff"
+
+    # same validation as activation: empty destinations / unknown persona -> 400
+    assert client.put(f"/tools/{editable_id}", json={"name": "X", "destinations": []}, headers=auth).status_code == 400
+    assert (
+        client.put(
+            f"/tools/{editable_id}",
+            json={"name": "X", "destinations": [{"persona_id": "nope", "description": "x"}]},
+            headers=auth,
+        ).status_code
+        == 400
+    )
+    assert client.put("/tools/does-not-exist", json={"name": "X"}, headers=auth).status_code == 404
+
+    print("edit + revalidate: ok")
+
     # --- tools/handoff.py + tools/registry.py: dynamic schema, resolution, execution ---
 
     handoff_tool = ActivatedTool(

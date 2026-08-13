@@ -64,6 +64,12 @@ export interface CreatePersonaRequest {
   tool_instance_ids?: string[]
 }
 
+export interface UpdatePersonaRequest {
+  name: string
+  system_prompt: string
+  first_message?: string
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
@@ -106,6 +112,12 @@ export interface ActivatedTool {
 
 export interface ActivateToolRequest {
   tool_id: string
+  name: string
+  config?: Record<string, string>
+  destinations?: HandoffDestination[]
+}
+
+export interface UpdateToolRequest {
   name: string
   config?: Record<string, string>
   destinations?: HandoffDestination[]

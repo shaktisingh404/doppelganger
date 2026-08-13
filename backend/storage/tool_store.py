@@ -9,6 +9,7 @@ the DB session (passed in per call) carries it.
 import json
 import uuid
 from abc import ABC, abstractmethod
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import select
@@ -69,13 +70,60 @@ async def add_instance(db: AsyncSession, instance: ActivatedTool, user_id: uuid.
 
 async def get_instance(db: AsyncSession, tool_instance_id: uuid.UUID, user_id: uuid.UUID) -> ActivatedTool | None:
     row = await db.scalar(
-        select(ToolInstanceRow).where(ToolInstanceRow.id == tool_instance_id, ToolInstanceRow.user_id == user_id)
+        select(ToolInstanceRow).where(
+            ToolInstanceRow.id == tool_instance_id,
+            ToolInstanceRow.user_id == user_id,
+            ToolInstanceRow.deleted_at.is_(None),
+        )
     )
     return _to_domain(row) if row else None
 
 
 async def list_instances(db: AsyncSession, user_id: uuid.UUID) -> list[ActivatedTool]:
     result = await db.scalars(
-        select(ToolInstanceRow).where(ToolInstanceRow.user_id == user_id).order_by(ToolInstanceRow.created_at)
+        select(ToolInstanceRow)
+        .where(ToolInstanceRow.user_id == user_id, ToolInstanceRow.deleted_at.is_(None))
+        .order_by(ToolInstanceRow.created_at)
     )
     return [_to_domain(r) for r in result]
+
+
+async def update_instance(
+    db: AsyncSession,
+    tool_instance_id: uuid.UUID,
+    user_id: uuid.UUID,
+    *,
+    name: str,
+    config: dict[str, str],
+    destinations: list[HandoffDestination],
+) -> ActivatedTool | None:
+    """tool_id is deliberately not editable — see app/schemas.py::UpdateToolRequest."""
+    row = await db.scalar(
+        select(ToolInstanceRow).where(
+            ToolInstanceRow.id == tool_instance_id,
+            ToolInstanceRow.user_id == user_id,
+            ToolInstanceRow.deleted_at.is_(None),
+        )
+    )
+    if row is None:
+        return None
+    row.name = name
+    row.config = config
+    row.destinations = [d.model_dump() for d in destinations]
+    await db.flush()
+    return _to_domain(row)
+
+
+async def delete_instance(db: AsyncSession, tool_instance_id: uuid.UUID, user_id: uuid.UUID) -> bool:
+    row = await db.scalar(
+        select(ToolInstanceRow).where(
+            ToolInstanceRow.id == tool_instance_id,
+            ToolInstanceRow.user_id == user_id,
+            ToolInstanceRow.deleted_at.is_(None),
+        )
+    )
+    if row is None:
+        return False
+    row.deleted_at = datetime.now(timezone.utc)
+    await db.flush()
+    return True
