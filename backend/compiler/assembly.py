@@ -1,16 +1,11 @@
-"""Layer 4: pure composition of layers 1-3 into a final system prompt.
-
-No LLM calls here — just string/object concatenation.
+"""Layer 4: pure composition of layers 1-3 into a final system prompt
+string. No LLM calls, no identity assignment — this is the "Generate"
+step; turning the resulting text into a stored, chattable AssembledPersona
+(persona_id, first_message, etc.) is a separate step the caller controls,
+since the text may get hand-edited in between. See
+compiler/pipeline.py::instantiate_persona.
 """
-import uuid
-
-from compiler.models import (
-    ArchetypeSpec,
-    AssembledPersona,
-    BusinessInfo,
-    InstanceDelta,
-    InstanceInput,
-)
+from compiler.models import ArchetypeSpec, BusinessInfo, InstanceDelta, InstanceInput, ReferenceFile
 
 
 def _business_info_section(info: BusinessInfo) -> str:
@@ -32,12 +27,23 @@ def _business_info_section(info: BusinessInfo) -> str:
     return "# Business Information\n" + "\n".join(lines)
 
 
+def _reference_files_section(files: list[ReferenceFile]) -> str:
+    docs = "\n\n".join(f"## {f.filename}\n{f.content}" for f in files)
+    return (
+        "# Reference Material\n"
+        "The following documents were provided as reference. Only use "
+        "information found in them for anything they'd cover; if asked "
+        "something they don't cover, say you don't have that information "
+        "rather than guessing.\n\n" + docs
+    )
+
+
 def assemble_persona(
     common_template: str,
     archetype: ArchetypeSpec,
     delta: InstanceDelta,
     instance: InstanceInput,
-) -> AssembledPersona:
+) -> str:
     guardrails = "\n".join(f"- {g}" for g in archetype.guardrail_additions)
     talking_points = "\n".join(f"- {p}" for p in delta.key_talking_points)
     avoid = "\n".join(f"- {a}" for a in delta.things_to_avoid)
@@ -45,6 +51,8 @@ def assemble_persona(
     style_lines = [f"Respond in {instance.language}."]
     if instance.tone:
         style_lines.append(f"Adopt a {instance.tone} tone throughout the conversation.")
+    if instance.conversational_style:
+        style_lines.append(instance.conversational_style)
 
     # Archetype-static content stays first and byte-identical across every
     # instance of this archetype, so it forms a stable, cacheable prefix.
@@ -58,6 +66,8 @@ def assemble_persona(
     sections.append(f"# Persona: {instance.name}")
     if instance.business_info:
         sections.append(_business_info_section(instance.business_info))
+    if instance.reference_files:
+        sections.append(_reference_files_section(instance.reference_files))
     sections.append("# Communication Style\n" + "\n".join(style_lines))
     if delta.specialization:
         sections.append(f"# Specialization\n{delta.specialization}")
@@ -68,9 +78,4 @@ def assemble_persona(
     if avoid:
         sections.append(f"# Things to Avoid\n{avoid}")
 
-    return AssembledPersona(
-        persona_id=str(uuid.uuid4()),
-        archetype_id=archetype.id,
-        name=instance.name,
-        system_prompt="\n\n".join(sections),
-    )
+    return "\n\n".join(sections)

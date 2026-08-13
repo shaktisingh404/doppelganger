@@ -5,3 +5,9 @@ pydantic-settings
 python-dotenv
 openai
 apscheduler
+sqlalchemy[asyncio]>=2.0
+asyncpg
+alembic
+bcrypt
+pyjwt
+email-validator

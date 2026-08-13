@@ -7,26 +7,33 @@ Calling (Twilio origination, the realtime bridge) was removed; if it comes
 back later, add a channel branch here rather than firing a phone call
 inline.
 
+Runs outside any HTTP request, so unlike every router it can't use
+Depends(get_db) — each dispatched row gets its own session, opened and
+committed/rolled back here directly (db/session.py's get_db does the same
+thing for a request; not reused as-is because a bare `async for` over a
+generator dependency doesn't correctly propagate an exception from the
+loop body back into its except/rollback block the way FastAPI's own DI
+machinery does).
+
 APScheduler's AsyncIOScheduler just drives the poll interval — a single
 job, not a task queue. See config.py for the interval/retry-delay knobs.
 """
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Callable
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from compiler.models import AssembledPersona
-from config import Settings
+import scheduler.models as scheduled_call_store
+import storage.persona_store as persona_store
+from config import Settings, get_settings
+from db.session import get_session_factory
 from providers.llm import run_turn
-from scheduler.models import ScheduledCall, ScheduledCallStore
+from scheduler.models import ScheduledCall
 
 logger = logging.getLogger("scheduler")
 
 _MAX_ATTEMPTS = 2  # the original attempt + exactly one retry, no backoff series
-
-GetPersona = Callable[[str], "AssembledPersona | None"]
-GetHistory = Callable[[str], list[dict[str, str]]]
 
 
 def build_resume_context_block(context_summary: str, resume_stage: str | None) -> str:
@@ -44,83 +51,85 @@ def build_resume_context_block(context_summary: str, resume_stage: str | None) -
     return "\n".join(lines)
 
 
-async def _dispatch_one(
-    row: ScheduledCall,
-    store: ScheduledCallStore,
-    settings: Settings,
-    get_persona: GetPersona,
-    get_history: GetHistory,
-) -> None:
-    row.attempts += 1
-    persona = get_persona(row.persona_id)
-    if persona is None:
-        row.status = "failed"
-        store.update(row)
-        logger.error(
-            "scheduled_followup_unknown_persona id=%s persona_id=%s", row.id, row.persona_id
-        )
-        return
+async def _dispatch_one(row: ScheduledCall, user_id: uuid.UUID, settings: Settings) -> None:
+    session_factory = get_session_factory()
+    async with session_factory() as db:
+        try:
+            row.attempts += 1
+            persona_id = uuid.UUID(row.persona_id)
+            # get_effective, not get: if this persona has since been
+            # handed off (tools/handoff.py), the follow-up should come
+            # from whoever is actually answering the thread now.
+            persona = await persona_store.get_effective(db, persona_id, user_id)
+            if persona is None:
+                row.status = "failed"
+                await scheduled_call_store.update(db, row, user_id)
+                await db.commit()
+                logger.error(
+                    "scheduled_followup_unknown_persona id=%s persona_id=%s", row.id, row.persona_id
+                )
+                return
 
-    history = get_history(row.persona_id)
-    prompt = build_resume_context_block(row.context_summary, row.resume_stage)
+            history = await persona_store.get_history(db, persona_id, user_id)
+            prompt = build_resume_context_block(row.context_summary, row.resume_stage)
 
-    try:
-        reply = await run_turn(persona.system_prompt, history, prompt)
-    except Exception:
-        logger.exception(
-            "scheduled_followup_failed id=%s persona_id=%s attempt=%d",
-            row.id,
-            row.persona_id,
-            row.attempts,
-        )
-        if row.attempts < _MAX_ATTEMPTS:
-            row.scheduled_time = datetime.now(timezone.utc) + timedelta(
-                seconds=settings.scheduled_callback_retry_delay_seconds
-            )
-            store.update(row)
-        else:
-            row.status = "failed"
-            store.update(row)
-            logger.error(
-                "scheduled_callback_failed id=%s persona_id=%s attempts=%d",
+            try:
+                reply = await run_turn(persona.system_prompt, history, prompt)
+            except Exception:
+                logger.exception(
+                    "scheduled_followup_failed id=%s persona_id=%s attempt=%d",
+                    row.id,
+                    row.persona_id,
+                    row.attempts,
+                )
+                if row.attempts < _MAX_ATTEMPTS:
+                    row.scheduled_time = datetime.now(timezone.utc) + timedelta(
+                        seconds=settings.scheduled_callback_retry_delay_seconds
+                    )
+                else:
+                    row.status = "failed"
+                    logger.error(
+                        "scheduled_callback_failed id=%s persona_id=%s attempts=%d",
+                        row.id,
+                        row.persona_id,
+                        row.attempts,
+                    )
+                await scheduled_call_store.update(db, row, user_id)
+                await db.commit()
+                return
+
+            await persona_store.append_history(db, persona_id, "assistant", reply)
+            row.status = "completed"
+            await scheduled_call_store.update(db, row, user_id)
+            await db.commit()
+            logger.info(
+                "scheduled_followup_delivered id=%s persona_id=%s attempt=%d",
                 row.id,
                 row.persona_id,
                 row.attempts,
             )
-        return
-
-    history.append({"role": "assistant", "content": reply})
-    row.status = "completed"
-    store.update(row)
-    logger.info(
-        "scheduled_followup_delivered id=%s persona_id=%s attempt=%d",
-        row.id,
-        row.persona_id,
-        row.attempts,
-    )
+        except Exception:
+            await db.rollback()
+            raise
 
 
-async def poll_once(
-    store: ScheduledCallStore, settings: Settings, get_persona: GetPersona, get_history: GetHistory
-) -> None:
+async def poll_once(settings: Settings | None = None) -> None:
+    settings = settings or get_settings()
     now = datetime.now(timezone.utc)
-    due = [r for r in store.list(status="pending") if r.scheduled_time <= now]
-    for row in due:
-        await _dispatch_one(row, store, settings, get_persona, get_history)
+    session_factory = get_session_factory()
+    async with session_factory() as db:
+        due = await scheduled_call_store.list_due(db, now)
+    for row, user_id in due:
+        await _dispatch_one(row, user_id, settings)
 
 
-def start_dispatcher(
-    store: ScheduledCallStore,
-    settings: Settings,
-    get_persona: GetPersona,
-    get_history: GetHistory,
-) -> AsyncIOScheduler:
+def start_dispatcher(settings: Settings) -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
         poll_once,
         "interval",
         seconds=settings.scheduled_callback_poll_interval_seconds,
-        args=[store, settings, get_persona, get_history],
+        args=[settings],
         id="scheduled_callback_poll",
     )
     scheduler.start()

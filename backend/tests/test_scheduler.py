@@ -1,26 +1,37 @@
-"""Smoke test for scheduler/ (tool validation, store, dispatcher retry/fail
-logic — no real network, fake originate_call). Run with:
+"""Smoke test for scheduler/ (tool validation, DB-backed store, dispatcher
+retry/fail logic) against the real Postgres DB (DATABASE_URL/
+JWT_SECRET_KEY come from .env — see backend/README.md's Tests section).
+No LLM network calls — dispatcher.run_turn is monkeypatched. Run with:
 python -m tests.test_scheduler  (run from backend/)
 """
 import asyncio
 import os
+import uuid
+from datetime import datetime, timedelta, timezone
 
 os.environ.setdefault("GROQ_API_KEY", "test-key")
 
-from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
+from sqlalchemy import delete
 
-from config import Settings
+import scheduler.models as scheduled_call_store
+import storage.persona_store as persona_store
+from compiler.models import AssembledPersona
+from config import get_settings
+from db.models import User
+from db.session import get_session_factory
 from scheduler import dispatcher
-from scheduler.models import ScheduledCall, ScheduledCallStore
+from scheduler.models import ScheduledCall
 from scheduler.tool import ScheduleCallbackError, schedule_callback
 
 NOW = datetime(2026, 8, 11, 12, 0, tzinfo=timezone.utc)
-SETTINGS = Settings(
-    groq_api_key="x",
-    scheduled_callback_max_window_days=30,
-    scheduled_callback_max_pending_per_number=2,
-    scheduled_callback_retry_delay_seconds=300,
+# Real database_url/jwt_secret_key from .env, only the scheduler-specific
+# knobs overridden (a lower cap makes the per-number-cap test cheap).
+SETTINGS = get_settings().model_copy(
+    update={
+        "scheduled_callback_max_window_days": 30,
+        "scheduled_callback_max_pending_per_number": 2,
+        "scheduled_callback_retry_delay_seconds": 300,
+    }
 )
 
 
@@ -28,100 +39,10 @@ def _iso(dt: datetime) -> str:
     return dt.isoformat()
 
 
-# --- tool validation ---------------------------------------------------
-
-store = ScheduledCallStore()
-
-row = schedule_callback(
-    store,
-    SETTINGS,
-    persona_id="p1",
-    phone_number="+15559998888",
-    source_call_id="CA_SRC",
-    scheduled_time=_iso(NOW + timedelta(hours=6)),
-    context_summary="caller wants a quote follow-up",
-    resume_stage="pricing",
-    now=NOW,
-)
-assert row.status == "pending"
-assert row.scheduled_time == NOW + timedelta(hours=6)
-assert store.get(row.id) is row
-
-try:
-    schedule_callback(
-        store, SETTINGS, persona_id="p1", phone_number="+1", source_call_id="c",
-        scheduled_time=_iso(NOW - timedelta(hours=1)), context_summary="x", now=NOW,
-    )
-    assert False, "should reject a past timestamp"
-except ScheduleCallbackError:
-    pass
-
-try:
-    schedule_callback(
-        store, SETTINGS, persona_id="p1", phone_number="+1", source_call_id="c",
-        scheduled_time=_iso(NOW + timedelta(days=60)), context_summary="x", now=NOW,
-    )
-    assert False, "should reject a window that's too far out"
-except ScheduleCallbackError:
-    pass
-
-try:
-    schedule_callback(
-        store, SETTINGS, persona_id="p1", phone_number="+1", source_call_id="c",
-        scheduled_time="not-a-timestamp", context_summary="x", now=NOW,
-    )
-    assert False, "should reject a non-ISO timestamp"
-except ScheduleCallbackError:
-    pass
-
-try:
-    schedule_callback(
-        store, SETTINGS, persona_id="p1", phone_number="+1", source_call_id="c",
-        scheduled_time="2026-08-12T00:00:00", context_summary="x", now=NOW,
-    )
-    assert False, "should reject a timestamp with no UTC offset"
-except ScheduleCallbackError:
-    pass
-
-# per-number cap: SETTINGS allows 2 pending; number already has 0, so 2 more succeed, 3rd rejected
-number = "+15551112222"
-schedule_callback(
-    store, SETTINGS, persona_id="p1", phone_number=number, source_call_id="c",
-    scheduled_time=_iso(NOW + timedelta(hours=1)), context_summary="x", now=NOW,
-)
-schedule_callback(
-    store, SETTINGS, persona_id="p1", phone_number=number, source_call_id="c",
-    scheduled_time=_iso(NOW + timedelta(hours=2)), context_summary="x", now=NOW,
-)
-try:
-    schedule_callback(
-        store, SETTINGS, persona_id="p1", phone_number=number, source_call_id="c",
-        scheduled_time=_iso(NOW + timedelta(hours=3)), context_summary="x", now=NOW,
-    )
-    assert False, "should reject once the per-number pending cap is hit"
-except ScheduleCallbackError:
-    pass
-
-print("tool validation: ok")
-
-
-# --- resume-context block -----------------------------------------------
-
-block = dispatcher.build_resume_context_block("caller wants a quote follow-up", "pricing")
-assert "caller wants a quote follow-up" in block
-assert "Resume at stage: pricing" in block
-assert dispatcher.build_resume_context_block("just checking in", None).count("Resume at stage") == 0
-
-print("resume-context block: ok")
-
-
-# --- dispatcher: success, retry-once, then fail (chat firing) -----------
-
-
-def _due_row(**overrides) -> ScheduledCall:
+def _due_row(persona_id: str, **overrides) -> ScheduledCall:
     defaults = dict(
-        id="row1",
-        persona_id="p1",
+        id=str(uuid.uuid4()),
+        persona_id=persona_id,
         phone_number="+15559998888",
         scheduled_time=NOW,
         context_summary="ctx",
@@ -131,64 +52,174 @@ def _due_row(**overrides) -> ScheduledCall:
     return ScheduledCall(**defaults)
 
 
-async def _run():
-    fake_persona = SimpleNamespace(system_prompt="You are a test persona.")
-    histories: dict[str, list[dict[str, str]]] = {}
+async def main():
+    session_factory = get_session_factory()
 
-    def get_persona(pid: str):
-        return fake_persona if pid == "p1" else None
+    # --- fixtures: two real users (FK-backed personas need a real owner) ---
+    async with session_factory() as db:
+        user = User(email=f"test-{uuid.uuid4()}@example.com", hashed_password="x")
+        other_user = User(email=f"test-{uuid.uuid4()}@example.com", hashed_password="x")
+        db.add(user)
+        db.add(other_user)
+        await db.flush()
+        user_id, other_user_id = user.id, other_user.id
 
-    def get_history(pid: str) -> list[dict[str, str]]:
-        return histories.setdefault(pid, [])
+        persona = AssembledPersona(
+            persona_id=str(uuid.uuid4()), name="P1", system_prompt="You are a test persona."
+        )
+        await persona_store.add(db, persona, user_id)
+        await db.commit()
+    persona_id = persona.persona_id
+
+    # --- tool validation ------------------------------------------------
+
+    async with session_factory() as db:
+        row = await schedule_callback(
+            db,
+            SETTINGS,
+            user_id=user_id,
+            persona_id=persona_id,
+            phone_number="+15559998888",
+            source_call_id="CA_SRC",
+            scheduled_time=_iso(NOW + timedelta(hours=6)),
+            context_summary="caller wants a quote follow-up",
+            resume_stage="pricing",
+            now=NOW,
+        )
+        await db.commit()
+    assert row.status == "pending"
+    assert row.scheduled_time == NOW + timedelta(hours=6)
+
+    async def _expect_reject(reason: str, **kwargs):
+        async with session_factory() as db:
+            try:
+                await schedule_callback(db, SETTINGS, user_id=user_id, persona_id=persona_id, now=NOW, **kwargs)
+                assert False, f"should reject: {reason}"
+            except ScheduleCallbackError:
+                pass
+
+    await _expect_reject(
+        "a past timestamp",
+        phone_number="+1", source_call_id="c",
+        scheduled_time=_iso(NOW - timedelta(hours=1)), context_summary="x",
+    )
+    await _expect_reject(
+        "a window that's too far out",
+        phone_number="+1", source_call_id="c",
+        scheduled_time=_iso(NOW + timedelta(days=60)), context_summary="x",
+    )
+    await _expect_reject(
+        "a non-ISO timestamp",
+        phone_number="+1", source_call_id="c",
+        scheduled_time="not-a-timestamp", context_summary="x",
+    )
+    await _expect_reject(
+        "a timestamp with no UTC offset",
+        phone_number="+1", source_call_id="c",
+        scheduled_time="2026-08-12T00:00:00", context_summary="x",
+    )
+
+    # per-number cap: SETTINGS allows 2 pending; number already has 0, so 2 more succeed, 3rd rejected
+    number = "+15551112222"
+    async with session_factory() as db:
+        await schedule_callback(
+            db, SETTINGS, user_id=user_id, persona_id=persona_id, phone_number=number, source_call_id="c",
+            scheduled_time=_iso(NOW + timedelta(hours=1)), context_summary="x", now=NOW,
+        )
+        await schedule_callback(
+            db, SETTINGS, user_id=user_id, persona_id=persona_id, phone_number=number, source_call_id="c",
+            scheduled_time=_iso(NOW + timedelta(hours=2)), context_summary="x", now=NOW,
+        )
+        await db.commit()
+    await _expect_reject(
+        "once the per-number pending cap is hit",
+        phone_number=number, source_call_id="c",
+        scheduled_time=_iso(NOW + timedelta(hours=3)), context_summary="x",
+    )
+
+    print("tool validation: ok")
+
+    # --- scoping: another user can't see or fetch this one's rows --------
+
+    async with session_factory() as db:
+        others_view = await scheduled_call_store.list_all(db, other_user_id)
+        direct_fetch = await scheduled_call_store.get(db, uuid.UUID(row.id), other_user_id)
+    assert row.id not in {r.id for r in others_view}
+    assert direct_fetch is None
+
+    print("scoping: ok")
+
+    # --- resume-context block -------------------------------------------
+
+    block = dispatcher.build_resume_context_block("caller wants a quote follow-up", "pricing")
+    assert "caller wants a quote follow-up" in block
+    assert "Resume at stage: pricing" in block
+    assert dispatcher.build_resume_context_block("just checking in", None).count("Resume at stage") == 0
+
+    print("resume-context block: ok")
+
+    # --- dispatcher: success, retry-once, then fail ----------------------
 
     async def fake_run_turn_ok(system_prompt, history, user_message):
         return "Hey, following up like I said I would!"
 
     dispatcher.run_turn = fake_run_turn_ok
-    ok_store = ScheduledCallStore()
-    ok_store.add(_due_row(id="ok"))
-    await dispatcher.poll_once(ok_store, SETTINGS, get_persona, get_history)
-    assert ok_store.get("ok").status == "completed"
-    assert ok_store.get("ok").attempts == 1
-    assert histories["p1"][-1] == {
-        "role": "assistant",
-        "content": "Hey, following up like I said I would!",
-    }
+    ok_row = _due_row(persona_id)
+    async with session_factory() as db:
+        await scheduled_call_store.add(db, ok_row, user_id)
+        await db.commit()
+    await dispatcher._dispatch_one(ok_row, user_id, SETTINGS)
+    async with session_factory() as db:
+        refreshed = await scheduled_call_store.get(db, uuid.UUID(ok_row.id), user_id)
+    assert refreshed.status == "completed"
+    assert refreshed.attempts == 1
+    async with session_factory() as db:
+        history = await persona_store.get_history(db, uuid.UUID(persona_id), user_id)
+    assert history[-1] == {"role": "assistant", "content": "Hey, following up like I said I would!"}
 
     async def fake_run_turn_fail(system_prompt, history, user_message):
         raise RuntimeError("llm down")
 
     dispatcher.run_turn = fake_run_turn_fail
-    retry_store = ScheduledCallStore()
-    retry_store.add(_due_row(id="retry"))
-    await dispatcher.poll_once(retry_store, SETTINGS, get_persona, get_history)
-    row = retry_store.get("retry")
-    assert row.status == "pending"
-    assert row.attempts == 1
-    assert row.scheduled_time > NOW  # bumped forward by the retry delay
+    retry_row = _due_row(persona_id)
+    async with session_factory() as db:
+        await scheduled_call_store.add(db, retry_row, user_id)
+        await db.commit()
 
-    # second poll after the bumped time still isn't due yet
-    await dispatcher.poll_once(retry_store, SETTINGS, get_persona, get_history)
-    assert retry_store.get("retry").attempts == 1
+    await dispatcher._dispatch_one(retry_row, user_id, SETTINGS)
+    async with session_factory() as db:
+        row1 = await scheduled_call_store.get(db, uuid.UUID(retry_row.id), user_id)
+    assert row1.status == "pending"
+    assert row1.attempts == 1
+    assert row1.scheduled_time > NOW  # bumped forward by the retry delay
 
-    # force it due again to exercise the final-failure path
-    row.scheduled_time = datetime.now(timezone.utc) - timedelta(seconds=1)
-    retry_store.update(row)
-    await dispatcher.poll_once(retry_store, SETTINGS, get_persona, get_history)
-    failed = retry_store.get("retry")
-    assert failed.status == "failed"
-    assert failed.attempts == 2
+    # second dispatch after the bump exercises the final-failure path once forced due again
+    row1.scheduled_time = datetime.now(timezone.utc) - timedelta(seconds=1)
+    await dispatcher._dispatch_one(row1, user_id, SETTINGS)
+    async with session_factory() as db:
+        row2 = await scheduled_call_store.get(db, uuid.UUID(retry_row.id), user_id)
+    assert row2.status == "failed"
+    assert row2.attempts == 2
 
-    # unknown persona fails immediately, no retry wasted
-    unknown_store = ScheduledCallStore()
-    unknown_store.add(_due_row(id="unknown", persona_id="does-not-exist"))
-    await dispatcher.poll_once(unknown_store, SETTINGS, get_persona, get_history)
-    unknown = unknown_store.get("unknown")
-    assert unknown.status == "failed"
-    assert unknown.attempts == 1
+    # A row pointing at a persona that doesn't resolve for this user --
+    # fails immediately, no retry wasted. Deliberately never inserted via
+    # scheduled_call_store.add(): scheduled_calls.persona_id is now
+    # FK-enforced (ON DELETE CASCADE), so a *stored* row can never
+    # reference a persona that doesn't exist -- this exercises
+    # _dispatch_one's defensive branch directly rather than via a
+    # scenario the real poll_once()/FK-constrained schema can't produce.
+    unknown_row = _due_row(str(uuid.uuid4()))
+    await dispatcher._dispatch_one(unknown_row, user_id, SETTINGS)
+    assert unknown_row.status == "failed"
+    assert unknown_row.attempts == 1
+
+    print("dispatcher retry/fail: ok")
+
+    # --- cleanup: cascades personas/scheduled_calls/chat_messages ---------
+    async with session_factory() as db:
+        await db.execute(delete(User).where(User.id.in_([user_id, other_user_id])))
+        await db.commit()
 
 
-asyncio.run(_run())
-print("dispatcher retry/fail: ok")
-
+asyncio.run(main())
 print("ok")

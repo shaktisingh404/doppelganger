@@ -1,12 +1,13 @@
-"""Process-wide singleton stores — the composition root for this app's
-in-memory state (phase 1 scope: single process, no persistence). Routers
-import these instances directly rather than each owning their own state.
+"""Process-wide singletons — now just the two file/JSON-backed catalogs
+(developer-edited reference content, no reason to live in Postgres).
+Everything else (personas, tool instances, scheduled calls, chat history)
+is user-scoped and DB-backed — see storage/persona_store.py,
+storage/tool_store.py, scheduler/models.py — fetched per request via
+Depends(get_db), not held here.
 """
 from config import get_settings
-from scheduler.models import ScheduledCallStore
 from storage.archetype_store import ArchetypeStore, FileArchetypeStore
-from storage.persona_store import PersonaStore
+from storage.tool_store import FileToolDefinitionStore, ToolDefinitionStore
 
 archetype_store: ArchetypeStore = FileArchetypeStore(get_settings().archetypes_dir)
-persona_store = PersonaStore()
-scheduled_call_store = ScheduledCallStore()
+tool_definition_store: ToolDefinitionStore = FileToolDefinitionStore(get_settings().tools_dir)

@@ -16,8 +16,11 @@ import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
+import scheduler.models as scheduled_call_store
 from config import Settings
-from scheduler.models import ScheduledCall, ScheduledCallStore
+from scheduler.models import ScheduledCall
 
 SCHEDULE_CALLBACK_TOOL = {
     "name": "schedule_callback",
@@ -55,10 +58,11 @@ class ScheduleCallbackError(ValueError):
     silently accepting a bad timestamp or an abusive request."""
 
 
-def schedule_callback(
-    store: ScheduledCallStore,
+async def schedule_callback(
+    db: AsyncSession,
     settings: Settings,
     *,
+    user_id: uuid.UUID,
     persona_id: str,
     phone_number: str,
     source_call_id: str,
@@ -92,7 +96,7 @@ def schedule_callback(
             "days out"
         )
 
-    pending = store.count_pending_for_number(phone_number)
+    pending = await scheduled_call_store.count_pending_for_number(db, phone_number, user_id)
     if pending >= settings.scheduled_callback_max_pending_per_number:
         raise ScheduleCallbackError(
             f"{phone_number} already has {pending} pending callbacks "
@@ -108,21 +112,22 @@ def schedule_callback(
         resume_stage=resume_stage,
         source_call_id=source_call_id,
     )
-    store.add(row)
+    await scheduled_call_store.add(db, row, user_id)
     return row
 
 
 async def execute_schedule_callback_tool_call(
-    store: ScheduledCallStore, settings: Settings, persona_id: str, tool_name: str, args: dict
+    db: AsyncSession, settings: Settings, user_id: uuid.UUID, persona_id: str, tool_name: str, args: dict
 ) -> str:
     """Adapts providers.llm.run_turn's generic (tool_name, args) -> JSON
     string tool_executor contract to schedule_callback."""
     if tool_name != "schedule_callback":
         return json.dumps({"error": f"unknown tool {tool_name}"})
     try:
-        row = schedule_callback(
-            store,
+        row = await schedule_callback(
+            db,
             settings,
+            user_id=user_id,
             persona_id=persona_id,
             # chat has no phone number to key the per-identity pending cap on,
             # so persona_id (1:1 with a chat thread today) stands in for it.

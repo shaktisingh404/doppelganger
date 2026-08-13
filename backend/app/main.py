@@ -1,24 +1,22 @@
 """FastAPI composition root: creates the app, wires the lifespan
 dispatcher, and mounts the routers. Route handlers live in app/routers/;
-in-memory state lives in app/state.py; request/response schemas live in
-app/schemas.py.
+DB-backed state lives in db/ + storage/ (see storage/persona_store.py);
+the two file-backed catalogs live in app/state.py; request/response
+schemas live in app/schemas.py.
 """
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import archetypes, personas, scheduled_calls
-from app.state import persona_store, scheduled_call_store
+from app.routers import archetypes, auth, personas, scheduled_calls, tools
 from config import get_settings
 from scheduler.dispatcher import start_dispatcher
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    dispatcher = start_dispatcher(
-        scheduled_call_store, get_settings(), persona_store.get, persona_store.history
-    )
+    dispatcher = start_dispatcher(get_settings())
     try:
         yield
     finally:
@@ -38,5 +36,7 @@ app.add_middleware(
 )
 
 app.include_router(archetypes.router)
+app.include_router(auth.router)
 app.include_router(personas.router)
 app.include_router(scheduled_calls.router)
+app.include_router(tools.router)

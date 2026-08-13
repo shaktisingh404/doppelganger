@@ -1,0 +1,16 @@
+{
+  "id": "google_sheets",
+  "display_name": "Google Sheets",
+  "description": "Read or log rows to a connected Google Sheet. Needs OAuth setup that isn't wired up yet.",
+  "category": "integration",
+  "status": "coming_soon",
+  "config_fields": [
+    {
+      "key": "spreadsheet_id",
+      "label": "Spreadsheet ID",
+      "placeholder": "the long id from the sheet's URL",
+      "required": true,
+      "multiline": false
+    }
+  ]
+}

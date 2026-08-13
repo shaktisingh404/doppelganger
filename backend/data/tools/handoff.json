@@ -1,0 +1,8 @@
+{
+  "id": "handoff",
+  "display_name": "Handoff to Assistant",
+  "description": "Lets the persona hand off the conversation to a different, better-suited assistant partway through — pick one or more destination assistants and describe when each fits.",
+  "category": "routing",
+  "status": "available",
+  "config_fields": []
+}

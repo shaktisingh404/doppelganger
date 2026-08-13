@@ -20,6 +20,15 @@ export function ChatPanel({ personaId, personaName }: Props) {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
+  // Loads the persona's history right away — notably the seeded
+  // first_message (storage/persona_store.py) — instead of showing an empty
+  // "say hello" state until the first poll tick catches up.
+  useEffect(() => {
+    getChatHistory(personaId)
+      .then(setMessages)
+      .catch((e) => setError(String(e)))
+  }, [personaId])
+
   // Picks up messages the persona sends on its own, e.g. a fired scheduled
   // follow-up (scheduler/dispatcher.py) — those never come back as a
   // sendChatMessage() response, only through polled history.

@@ -1,0 +1,16 @@
+{
+  "id": "google_calendar",
+  "display_name": "Google Calendar",
+  "description": "Check availability and book events on a connected Google Calendar. Needs OAuth setup that isn't wired up yet.",
+  "category": "integration",
+  "status": "coming_soon",
+  "config_fields": [
+    {
+      "key": "calendar_id",
+      "label": "Calendar ID",
+      "placeholder": "you@example.com",
+      "required": true,
+      "multiline": false
+    }
+  ]
+}

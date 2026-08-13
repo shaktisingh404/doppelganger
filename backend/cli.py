@@ -2,7 +2,7 @@
 import asyncio
 
 from compiler.models import BusinessInfo, InstanceInput
-from compiler.pipeline import build_persona
+from compiler.pipeline import generate_system_prompt, instantiate_persona
 from config import get_settings
 from providers.llm import run_turn
 from storage.archetype_store import FileArchetypeStore
@@ -50,13 +50,21 @@ async def main() -> None:
         business_info=business_info,
     )
 
-    persona = await build_persona(instance, store)
-    print("\n--- Assembled system prompt ---")
-    print(persona.system_prompt)
+    system_prompt = await generate_system_prompt(instance, store)
+    print("\n--- Generated system prompt ---")
+    print(system_prompt)
     print("--- end system prompt ---\n")
 
-    print(f"Chatting as {persona.name}. Type 'quit' to exit.\n")
+    first_message = input("first message (optional, blank = user speaks first): ").strip()
+    persona = instantiate_persona(
+        name=name, system_prompt=system_prompt, first_message=first_message, archetype_id=archetype_id
+    )
+
+    print(f"\nChatting as {persona.name}. Type 'quit' to exit.\n")
     history: list[dict[str, str]] = []
+    if persona.first_message:
+        print(f"{persona.name}> {persona.first_message}\n")
+        history.append({"role": "assistant", "content": persona.first_message})
     while True:
         user_message = input("you> ").strip()
         if user_message.lower() in {"quit", "exit"}:
