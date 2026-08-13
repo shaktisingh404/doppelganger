@@ -12,3 +12,5 @@
 # Claude Code — project-level agents/skills/settings are meant to be
 # shared, but machine-local overrides are not.
 .claude/settings.local.json
+
+/docs

@@ -73,85 +73,41 @@ cd backend && python cli.py
 
 ## Architecture
 
-### Persona compiler (`backend/compiler/`)
+Full docs live in **`docs/`** — start at [`docs/README.md`](./docs/README.md).
+Quick orientation:
 
-Four layers, only one of which calls an LLM:
-
-1. **Common template** (`data/common_template.txt`) — static guardrails/
-   format rules, loaded once via `compiler/layers.py::load_common_template`.
-2. **Archetype** (`data/archetypes/*.json`, hand-seeded) — one bundle per
-   persona category, loaded through `storage/archetype_store.py`'s
-   `ArchetypeStore` interface (`FileArchetypeStore` today; swap
-   implementations without touching compiler code).
-3. **Instance delta** (`compiler/layers.py::build_instance_delta` →
-   `providers/llm.py::extract_delta`) — the *only* LLM call in the
-   pipeline, and it's narrow: forced tool-calling extracts free text into
-   a fixed `InstanceDelta` schema rather than open-ended generation.
-4. **Assembly** (`compiler/assembly.py::assemble_persona`) — pure string
-   composition of 1–3 into the final system prompt. No LLM calls. Section
-   order matters: archetype-static content stays first (byte-identical
-   across every instance of that archetype, forming a stable cacheable
-   prefix), instance/delta content that varies per persona always comes
-   after.
-
-`compiler/pipeline.py::build_persona` runs all four layers and is the
-single entry point used by both `app/main.py` and `cli.py` — don't call
-the layers piecemeal from a new call site.
-
-### Tool-calling in chat (`providers/llm.py::run_turn`)
-
-`run_turn` is a generic tool-calling loop, deliberately kept
-domain-agnostic (it takes `tools`/`tool_executor` params but doesn't know
-what any tool *does*). The `/chat` endpoint in `app/main.py` is what wires
-in the scheduling-specific tool (`scheduler.tool.SCHEDULE_CALLBACK_TOOL`)
-and its executor. When `tools` is passed, `run_turn` injects the current
-UTC time into the system prompt — without that grounding the model can't
-resolve relative phrasing ("tomorrow at 3pm") into the absolute timestamp
-`schedule_callback` requires; nothing else in the codebase supplies it.
-
-The scheduler's own proactive follow-up firing (see below) calls
-`run_turn` with no `tools`, so a fired follow-up can never itself trigger
-another tool call.
-
-### Scheduled follow-ups (`backend/scheduler/`)
-
-Not a task queue — a single APScheduler `AsyncIOScheduler` interval job
-(`scheduler/dispatcher.py::start_dispatcher`, registered in `app/main.py`'s
-FastAPI lifespan) polls an in-memory `ScheduledCallStore`
-(`scheduler/models.py`) every `scheduled_callback_poll_interval_seconds`
-(default 30s) for due, `pending` rows.
-
-- **Creating a row**: `scheduler/tool.py::schedule_callback` — called
-  either by the model mid-chat (via the `run_turn` tool-calling above) or
-  directly through the debug `POST /scheduled-calls` endpoint. Validates
-  the timestamp is absolute/tz-aware, in the future, within
-  `scheduled_callback_max_window_days`, and under
-  `scheduled_callback_max_pending_per_number` pending rows for that
-  identity. (Chat has no phone number, so `persona_id` stands in as the
-  cap key for chat-originated rows — see the executor in `app/main.py`.)
-- **Firing a row**: `scheduler/dispatcher.py::_dispatch_one` calls
-  `run_turn` with the persona's system prompt plus a hidden instruction
-  (`build_resume_context_block`) and appends the reply directly into that
-  persona's chat history — a proactive assistant message the user sees on
-  their next `GET /personas/{id}/chat/history` poll. One retry
-  (`_MAX_ATTEMPTS = 2`) on failure, then the row is marked `failed`.
-
-Storage is in-memory only — a restart wipes every pending row. If that
-starts to matter, persist `ScheduledCallStore`; there's no need to replace
-APScheduler itself for that (see the poll/retry knobs in `config.py`).
-
-### State model
-
-`app/main.py` holds `_personas`, `_histories`, and `_scheduled_calls` as
-plain in-memory dicts — no persistence, no database, single-process only.
-This is a deliberate phase-1 scope, not an oversight; don't add a database
-layer without checking whether it's actually needed yet.
-
-### Frontend ↔ backend contract
-
-`frontend/src/types.ts` mirrors the backend's Pydantic models by hand
-(`ArchetypeSpec`, `InstanceInput`, `AssembledPersona`, `ChatMessage`) — keep
-field names/optionality in sync manually when the API contract changes,
-there's no shared schema generation. `ChatPanel.tsx` polls
-`GET /personas/{id}/chat/history` every 4s (paused mid-send) specifically
-to surface proactive scheduler-fired messages without user action.
+- **Persona compiler** (`backend/compiler/`) — 4 layers (common template →
+  archetype → LLM-extracted instance delta → pure-string assembly),
+  entered via `compiler/pipeline.py`'s `generate_system_prompt` (the
+  "Generate" preview step) and `instantiate_persona` (the "Create" step).
+  Details: [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md).
+- **State is Postgres-backed**, not in-memory — every persona, tool
+  instance, scheduled call, and chat message is a real DB row, scoped per
+  authenticated user (JWT bearer auth). Soft delete (`deleted_at`), not
+  hard delete. Details: [`docs/DATABASE.md`](./docs/DATABASE.md),
+  [`docs/AUTH.md`](./docs/AUTH.md).
+- **Tool-calling in chat** (`providers/llm.py::run_turn`) — generic,
+  domain-agnostic tool-calling loop; `app/routers/personas.py`'s
+  `POST /personas/{id}/chat` wires in the always-on `schedule_callback`
+  tool plus whatever's attached (see `tools/registry.py`). Chat sampling
+  (`chat_max_tokens`/`chat_temperature`/`chat_reasoning_effort` in
+  `config.py`) and the common template's "1-2 sentences per turn" rule
+  keep replies phone-call length, not essays. Details:
+  [`docs/BACKEND.md`](./docs/BACKEND.md).
+- **Handoff** (`tools/handoff.py`) — routes a *live conversation* to a
+  different assistant mid-chat (matches Vapi's real behavior, not human
+  escalation) via a `Persona.active_persona_id` override. Details:
+  [`docs/TOOLS.md`](./docs/TOOLS.md).
+- **Scheduled follow-ups** (`backend/scheduler/`) — not a task queue, a
+  single APScheduler interval job polling Postgres directly. Safe under
+  multiple worker processes with no broker: `scheduler/models.py::claim_due`
+  atomically claims due rows via one `UPDATE ... RETURNING`, so two
+  pollers can never double-fire the same row. Details:
+  [`docs/SCHEDULER.md`](./docs/SCHEDULER.md).
+- **Frontend ↔ backend contract** — `frontend/src/types.ts` mirrors the
+  backend's Pydantic models by hand; keep field names/optionality in sync
+  manually, there's no shared schema generation. `ChatPanel.tsx` polls
+  `GET /personas/{id}/chat/history` every 4s (paused mid-send) to surface
+  proactive scheduler-fired messages without user action. Details:
+  [`docs/FRONTEND.md`](./docs/FRONTEND.md), every endpoint:
+  [`docs/API.md`](./docs/API.md).

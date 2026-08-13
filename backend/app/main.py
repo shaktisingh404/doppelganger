@@ -12,6 +12,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routers import archetypes, auth, personas, scheduled_calls, tools
 from config import get_settings
 from scheduler.dispatcher import start_dispatcher
+from utils.logging_config import configure as configure_logging
+
+configure_logging()
 
 
 @asynccontextmanager

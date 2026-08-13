@@ -79,9 +79,14 @@ asyncio.run(_run())
 print("ok")
 
 
-def _fake_chat_response(content=None, tool_calls=None):
+def _fake_chat_response(content=None, tool_calls=None, finish_reason="stop"):
     return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=tool_calls))]
+        choices=[
+            SimpleNamespace(
+                finish_reason=finish_reason, message=SimpleNamespace(content=content, tool_calls=tool_calls)
+            )
+        ],
+        usage=SimpleNamespace(completion_tokens=0, completion_tokens_details=None),
     )
 
 
@@ -134,6 +139,45 @@ async def _run_turn_tests():
     assert "Current UTC time" in fake2.calls[0]["messages"][0]["content"]
     assert "Current UTC time" not in fake.calls[0]["messages"][0]["content"]
 
+    # A reasoning model that burns its whole max_tokens budget on hidden
+    # chain-of-thought (see chat_reasoning_effort in config.py) comes back
+    # with finish_reason="length" and empty content -- run_turn still
+    # returns "" rather than raising (nothing left to retry with mid-turn),
+    # but it must log loudly rather than silently swallowing this, since
+    # this is exactly the bug that shipped: users saw a blank reply with
+    # nothing in the logs to explain why.
+    import logging
+
+    class _CollectingHandler(logging.Handler):
+        def __init__(self):
+            super().__init__()
+            self.records = []
+
+        def emit(self, record):
+            self.records.append(record)
+
+    handler = _CollectingHandler()
+    llm.logger.addHandler(handler)
+    llm.logger.setLevel(logging.DEBUG)
+    try:
+        truncated = _fake_chat_response(
+            content="",
+            finish_reason="length",
+        )
+        truncated.usage = SimpleNamespace(
+            completion_tokens=200, completion_tokens_details=SimpleNamespace(reasoning_tokens=200)
+        )
+        fake3 = _FakeClient([truncated])
+        llm._get_client = lambda: fake3
+        reply3 = await llm.run_turn("system", [], "hello")
+        assert reply3 == ""
+    finally:
+        llm.logger.removeHandler(handler)
+
+    levels = [r.levelno for r in handler.records]
+    assert logging.WARNING in levels, "expected a truncation warning to be logged"
+    assert logging.ERROR in levels, "expected the empty-reply to be logged as an error"
+
 
 asyncio.run(_run_turn_tests())
-print("run_turn tool-calling: ok")
+print("run_turn tool-calling + truncated/empty-reply logging: ok")

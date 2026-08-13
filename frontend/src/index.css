@@ -208,16 +208,13 @@ body {
 
 .assistant-list-item {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.1rem;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.25rem;
   background: none;
   border: 1px solid transparent;
   border-radius: 8px;
-  padding: 0.55rem 0.6rem;
-  text-align: left;
-  color: inherit;
-  font: inherit;
+  padding: 0.4rem 0.4rem 0.4rem 0.6rem;
 }
 
 .assistant-list-item:hover {
@@ -229,6 +226,21 @@ body {
   border-color: var(--accent);
 }
 
+.assistant-list-item-select {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.1rem;
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  padding: 0.15rem 0;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+}
+
 .assistant-list-item-name {
   font-size: 0.9rem;
   font-weight: 500;
@@ -238,6 +250,29 @@ body {
   font-size: 0.74rem;
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.assistant-list-item-rename {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 0.85rem;
+  padding: 0.25rem;
+  border-radius: 6px;
+  line-height: 1;
+}
+
+.assistant-list-item-rename:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.assistant-rename-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.3rem 0.4rem;
+  font-size: 0.9rem;
 }
 
 /* Assistant editor */

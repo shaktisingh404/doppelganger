@@ -6,6 +6,9 @@ from compiler.pipeline import generate_system_prompt, instantiate_persona
 from config import get_settings
 from providers.llm import run_turn
 from storage.archetype_store import FileArchetypeStore
+from utils.logging_config import configure as configure_logging
+
+configure_logging()
 
 
 async def main() -> None:

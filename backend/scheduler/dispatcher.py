@@ -17,6 +17,11 @@ machinery does).
 
 APScheduler's AsyncIOScheduler just drives the poll interval — a single
 job, not a task queue. See config.py for the interval/retry-delay knobs.
+
+Safe to run this in more than one process at once (multiple uvicorn
+workers, multiple replicas) with no broker: scheduler/models.py::claim_due
+atomically claims due rows via a single UPDATE ... RETURNING, so two
+pollers racing on the same row is a non-issue — Postgres serializes it.
 """
 import logging
 import uuid
@@ -83,6 +88,10 @@ async def _dispatch_one(row: ScheduledCall, user_id: uuid.UUID, settings: Settin
                     row.attempts,
                 )
                 if row.attempts < _MAX_ATTEMPTS:
+                    # Un-claim it: claim_due only ever matches status="pending",
+                    # so without this a retried row would stay "processing"
+                    # forever and never get polled again.
+                    row.status = "pending"
                     row.scheduled_time = datetime.now(timezone.utc) + timedelta(
                         seconds=settings.scheduled_callback_retry_delay_seconds
                     )
@@ -118,7 +127,7 @@ async def poll_once(settings: Settings | None = None) -> None:
     now = datetime.now(timezone.utc)
     session_factory = get_session_factory()
     async with session_factory() as db:
-        due = await scheduled_call_store.list_due(db, now)
+        due = await scheduled_call_store.claim_due(db, now)
     for row, user_id in due:
         await _dispatch_one(row, user_id, settings)
 

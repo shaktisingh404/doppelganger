@@ -144,12 +144,19 @@ async def run_turn(
         *history,
         {"role": "user", "content": user_message},
     ]
-    kwargs = {"tools": tools, "tool_choice": "auto"} if tools else {}
+    # Applied to every completion call in this turn (initial + the one
+    # after a tool result) — both produce the reply the caller sees, so
+    # both need the same phone-call-length/consistency backstop.
+    sampling = {"max_tokens": settings.chat_max_tokens, "temperature": settings.chat_temperature}
+    if settings.chat_reasoning_effort is not None:
+        sampling["reasoning_effort"] = settings.chat_reasoning_effort
+    kwargs = {**sampling, "tools": tools, "tool_choice": "auto"} if tools else dict(sampling)
 
     resp = await _get_client().chat.completions.create(
         model=settings.chat_model, messages=messages, **kwargs
     )
     msg = resp.choices[0].message
+    _warn_if_truncated(resp, "initial")
 
     if msg.tool_calls and tool_executor:
         messages.append(
@@ -171,10 +178,42 @@ async def run_turn(
                 args = json.loads(tc.function.arguments)
                 result = await tool_executor(tc.function.name, args)
             except Exception as e:
+                logger.exception("tool call failed name=%s args=%s", tc.function.name, tc.function.arguments)
                 result = json.dumps({"error": str(e)})
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
 
-        resp = await _get_client().chat.completions.create(model=settings.chat_model, messages=messages)
+        resp = await _get_client().chat.completions.create(model=settings.chat_model, messages=messages, **sampling)
         msg = resp.choices[0].message
+        _warn_if_truncated(resp, "post-tool")
 
-    return _strip_thinking(msg.content)
+    reply = _strip_thinking(msg.content)
+    if not reply:
+        logger.error(
+            "run_turn produced an empty reply model=%s finish_reason=%s raw_content=%r",
+            settings.chat_model,
+            resp.choices[0].finish_reason,
+            msg.content,
+        )
+    return reply
+
+
+def _warn_if_truncated(resp, stage: str) -> None:
+    """finish_reason="length" means the model hit max_tokens before it was
+    done — on a reasoning model this can mean every token went to hidden
+    chain-of-thought and the visible reply came back empty (see
+    chat_reasoning_effort in config.py). Silent otherwise: this loop has
+    no way to retry with a bigger budget mid-turn, so the only thing to
+    do here is make it loud in logs so a low chat_max_tokens gets noticed
+    and raised, instead of a user just seeing a short/empty reply.
+    """
+    choice = resp.choices[0]
+    if choice.finish_reason == "length":
+        usage = resp.usage
+        reasoning_tokens = getattr(usage.completion_tokens_details, "reasoning_tokens", None) if usage else None
+        logger.warning(
+            "run_turn reply truncated stage=%s completion_tokens=%s reasoning_tokens=%s — "
+            "consider raising chat_max_tokens or check chat_reasoning_effort",
+            stage,
+            usage.completion_tokens if usage else "?",
+            reasoning_tokens,
+        )

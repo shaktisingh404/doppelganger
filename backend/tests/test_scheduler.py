@@ -149,6 +149,30 @@ async def main():
 
     print("scoping: ok")
 
+    # --- claim_due: concurrent pollers never double-claim the same row ---
+
+    claim_target = _due_row(persona_id)
+    async with session_factory() as db:
+        await scheduled_call_store.add(db, claim_target, user_id)
+        await db.commit()
+
+    # Two independent sessions racing on the same due row, same as two
+    # separate dispatcher processes polling at once -- this is exactly
+    # the scenario claim_due's atomic UPDATE ... RETURNING exists for.
+    async def _claim():
+        async with session_factory() as db:
+            return await scheduled_call_store.claim_due(db, NOW + timedelta(hours=1))
+
+    results = await asyncio.gather(_claim(), _claim())
+    claimed_ids = [r.id for batch in results for r, _ in batch if r.id == claim_target.id]
+    assert len(claimed_ids) == 1, f"expected exactly one claim, got {len(claimed_ids)}"
+
+    async with session_factory() as db:
+        claimed_row = await scheduled_call_store.get(db, uuid.UUID(claim_target.id), user_id)
+    assert claimed_row.status == "processing"
+
+    print("claim_due: no double-claim under concurrency: ok")
+
     # --- resume-context block -------------------------------------------
 
     block = dispatcher.build_resume_context_block("caller wants a quote follow-up", "pricing")

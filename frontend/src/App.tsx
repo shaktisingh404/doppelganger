@@ -92,7 +92,11 @@ function AuthenticatedApp({ user, onLogout }: { user: UserPublic; onLogout: () =
 
   function handlePersonaUpdated(persona: AssembledPersona) {
     setPersonas((prev) => prev.map((p) => (p.persona_id === persona.persona_id ? persona : p)))
-    setSelected(persona)
+    // Conditional, not a blind setSelected: PersonaView only ever edits the
+    // already-selected persona (so this is a no-op switch there), but the
+    // sidebar's inline rename can target any item -- renaming one you're
+    // not currently viewing shouldn't yank the main panel over to it.
+    setSelected((prev) => (prev?.persona_id === persona.persona_id ? persona : prev))
   }
 
   function handlePersonaDeleted(personaId: string) {
@@ -152,6 +156,7 @@ function AuthenticatedApp({ user, onLogout }: { user: UserPublic; onLogout: () =
               setCreatingFrom(a)
               setSelected(null)
             }}
+            onRenamed={handlePersonaUpdated}
           />
         ) : (
           <ToolsSidebar

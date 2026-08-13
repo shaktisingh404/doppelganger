@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { updatePersona } from '../api'
 import type { ArchetypeSpec, AssembledPersona } from '../types'
 
 interface Props {
@@ -7,10 +8,47 @@ interface Props {
   selectedId: string | null
   onSelect: (persona: AssembledPersona) => void
   onCreateFromArchetype: (archetype: ArchetypeSpec) => void
+  onRenamed: (persona: AssembledPersona) => void
 }
 
-export function AssistantSidebar({ personas, archetypes, selectedId, onSelect, onCreateFromArchetype }: Props) {
+export function AssistantSidebar({
+  personas,
+  archetypes,
+  selectedId,
+  onSelect,
+  onCreateFromArchetype,
+  onRenamed,
+}: Props) {
   const [menuOpen, setMenuOpen] = useState(false)
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [renameError, setRenameError] = useState<string | null>(null)
+
+  function startRename(p: AssembledPersona) {
+    setRenamingId(p.persona_id)
+    setRenameValue(p.name)
+    setRenameError(null)
+  }
+
+  async function commitRename(p: AssembledPersona) {
+    const name = renameValue.trim()
+    // No-op edits (blank, or unchanged) don't need a round trip.
+    if (!name || name === p.name) {
+      setRenamingId(null)
+      return
+    }
+    try {
+      const updated = await updatePersona(p.persona_id, {
+        name,
+        system_prompt: p.system_prompt,
+        first_message: p.first_message,
+      })
+      onRenamed(updated)
+      setRenamingId(null)
+    } catch (err) {
+      setRenameError(String(err))
+    }
+  }
 
   return (
     <>
@@ -47,16 +85,42 @@ export function AssistantSidebar({ personas, archetypes, selectedId, onSelect, o
       <div className="assistant-list">
         {personas.length === 0 && <p className="muted sidebar-empty">No assistants yet.</p>}
         {personas.map((p) => (
-          <button
+          <div
             key={p.persona_id}
-            type="button"
             className={`assistant-list-item${p.persona_id === selectedId ? ' selected' : ''}`}
-            onClick={() => onSelect(p)}
           >
-            <span className="assistant-list-item-name">{p.name}</span>
-            <span className="assistant-list-item-sub">{p.archetype_id ?? 'custom'}</span>
-          </button>
+            {renamingId === p.persona_id ? (
+              <input
+                className="assistant-rename-input"
+                autoFocus
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                onBlur={() => commitRename(p)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commitRename(p)
+                  if (e.key === 'Escape') setRenamingId(null)
+                }}
+              />
+            ) : (
+              <button type="button" className="assistant-list-item-select" onClick={() => onSelect(p)}>
+                <span className="assistant-list-item-name">{p.name}</span>
+                <span className="assistant-list-item-sub">{p.archetype_id ?? 'custom'}</span>
+              </button>
+            )}
+            {renamingId !== p.persona_id && (
+              <button
+                type="button"
+                className="assistant-list-item-rename"
+                onClick={() => startRename(p)}
+                aria-label={`Rename ${p.name}`}
+                title="Rename"
+              >
+                ✎
+              </button>
+            )}
+          </div>
         ))}
+        {renameError && <p className="error">{renameError}</p>}
       </div>
     </>
   )

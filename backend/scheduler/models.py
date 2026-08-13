@@ -9,11 +9,16 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import ScheduledCall as ScheduledCallRow
 
-ScheduledCallStatus = Literal["pending", "completed", "failed", "cancelled"]
+# "processing": a poller has atomically claimed the row (see claim_due)
+# and is currently dispatching it -- transient, should never be visible
+# for more than the length of one LLM call. Not reachable from the API
+# (ScheduleCallbackRequest/schedule_callback only ever create "pending").
+ScheduledCallStatus = Literal["pending", "processing", "completed", "failed", "cancelled"]
 
 
 class ScheduledCall(BaseModel):
@@ -82,14 +87,33 @@ async def update(db: AsyncSession, call: ScheduledCall, user_id: uuid.UUID) -> N
     await db.flush()
 
 
-async def list_due(db: AsyncSession, now: datetime) -> list[tuple[ScheduledCall, uuid.UUID]]:
-    """Every pending, due row across every user — the dispatcher polls
-    the whole table (there's no per-user context in a background job),
-    scoping only kicks in when it resolves each row's persona."""
-    result = await db.scalars(
-        select(ScheduledCallRow).where(ScheduledCallRow.status == "pending", ScheduledCallRow.scheduled_time <= now)
+async def claim_due(db: AsyncSession, now: datetime) -> list[tuple[ScheduledCall, uuid.UUID]]:
+    """Atomically claims every pending, due row across every user by
+    flipping it to "processing" in one UPDATE ... RETURNING, then commits
+    immediately (the caller does the actual dispatch in a separate
+    transaction per row). Safe if more than one dispatcher process is
+    polling at once (multiple uvicorn workers, multiple replicas):
+    Postgres serializes concurrent UPDATEs against the same rows, so two
+    pollers can never both claim the same row — the second one's WHERE
+    status="pending" simply matches nothing once the first commits.
+    No broker needed for this; it's the standard "Postgres as a queue"
+    claim pattern.
+
+    ponytail: no lease/heartbeat recovery — if a poller crashes after
+    claiming but before dispatching, that row is stuck "processing"
+    forever. Add a cron sweep (processing + older than N minutes ->
+    pending) if that ever happens in practice; not worth the complexity
+    until it does.
+    """
+    result = await db.execute(
+        sa_update(ScheduledCallRow)
+        .where(ScheduledCallRow.status == "pending", ScheduledCallRow.scheduled_time <= now)
+        .values(status="processing")
+        .returning(ScheduledCallRow)
     )
-    return [(_to_domain(r), r.user_id) for r in result]
+    await db.commit()
+    rows = result.scalars().all()
+    return [(_to_domain(r), r.user_id) for r in rows]
 
 
 async def list_all(db: AsyncSession, user_id: uuid.UUID, status: ScheduledCallStatus | None = None) -> list[ScheduledCall]:
