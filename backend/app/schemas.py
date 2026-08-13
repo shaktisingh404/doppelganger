@@ -69,3 +69,24 @@ class UpdateToolRequest(BaseModel):
     name: str
     config: dict[str, str] = {}
     destinations: list[HandoffDestination] = []
+
+
+class ShareLinkResponse(BaseModel):
+    share_token: str
+
+
+class PublicPersonaInfo(BaseModel):
+    """What an anonymous visitor is allowed to know about a shared
+    persona — deliberately just the name. No system_prompt, archetype_id,
+    or tool_instance_ids; that's the whole point of a public link."""
+
+    name: str
+
+
+class PublicSessionResponse(BaseModel):
+    session_id: str
+
+
+class PublicChatRequest(BaseModel):
+    session_id: str
+    message: str

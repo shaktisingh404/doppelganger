@@ -3,6 +3,7 @@ module-level functions rather than a class — there's no more in-memory
 state to encapsulate now that the DB session (passed in per call) carries
 it, matching the shape FastAPI's Depends(get_db) already gives every route.
 """
+import secrets
 import uuid
 from datetime import datetime, timezone
 
@@ -24,6 +25,7 @@ def _to_domain(row: PersonaRow) -> AssembledPersona:
         version=row.version,
         created_at=row.created_at,
         tool_instance_ids=row.tool_instance_ids,
+        share_token=row.share_token,
     )
 
 
@@ -154,8 +156,13 @@ async def get_history(db: AsyncSession, persona_id: uuid.UUID, user_id: uuid.UUI
     # another user could read that user's chat transcript.
     if await _get_row(db, persona_id, user_id) is None:
         return []
+    # session_id.is_(None): this is the owner's own authenticated test
+    # thread specifically -- excludes every public visitor's conversation
+    # (see get_session_history below), which now live in the same table.
     result = await db.scalars(
-        select(ChatMessageRow).where(ChatMessageRow.persona_id == persona_id).order_by(ChatMessageRow.seq)
+        select(ChatMessageRow)
+        .where(ChatMessageRow.persona_id == persona_id, ChatMessageRow.session_id.is_(None))
+        .order_by(ChatMessageRow.seq)
     )
     return [{"role": m.role, "content": m.content} for m in result]
 
@@ -163,3 +170,66 @@ async def get_history(db: AsyncSession, persona_id: uuid.UUID, user_id: uuid.UUI
 async def append_history(db: AsyncSession, persona_id: uuid.UUID, role: str, content: str) -> None:
     db.add(ChatMessageRow(persona_id=persona_id, role=role, content=content))
     await db.flush()
+
+
+async def get_session_history(
+    db: AsyncSession, persona_id: uuid.UUID, session_id: uuid.UUID
+) -> list[dict[str, str]]:
+    """The public-chat counterpart of get_history — scoped by session_id
+    instead of user_id, since a visitor is never authenticated. No
+    ownership check needed here: the caller (app/routers/public.py)
+    already validated session_id belongs to persona_id via
+    public_session_store.belongs_to before ever reaching this."""
+    result = await db.scalars(
+        select(ChatMessageRow)
+        .where(ChatMessageRow.persona_id == persona_id, ChatMessageRow.session_id == session_id)
+        .order_by(ChatMessageRow.seq)
+    )
+    return [{"role": m.role, "content": m.content} for m in result]
+
+
+async def append_session_history(
+    db: AsyncSession, persona_id: uuid.UUID, session_id: uuid.UUID, role: str, content: str
+) -> None:
+    db.add(ChatMessageRow(persona_id=persona_id, session_id=session_id, role=role, content=content))
+    await db.flush()
+
+
+async def enable_sharing(db: AsyncSession, persona_id: uuid.UUID, user_id: uuid.UUID) -> str | None:
+    """Generates and stores a fresh share token, replacing any previous
+    one -- re-enabling sharing after it was off always mints a new link
+    rather than reviving the old one. Returns None if the persona doesn't
+    exist/isn't owned by user_id."""
+    row = await _get_row(db, persona_id, user_id)
+    if row is None:
+        return None
+    row.share_token = secrets.token_urlsafe(24)
+    await db.flush()
+    return row.share_token
+
+
+async def disable_sharing(db: AsyncSession, persona_id: uuid.UUID, user_id: uuid.UUID) -> bool:
+    row = await _get_row(db, persona_id, user_id)
+    if row is None:
+        return False
+    row.share_token = None
+    await db.flush()
+    return True
+
+
+async def get_by_share_token(db: AsyncSession, share_token: str) -> tuple[AssembledPersona, uuid.UUID] | None:
+    """The one deliberately unauthenticated lookup in this module — backs
+    every route in app/routers/public.py. Still excludes soft-deleted
+    personas; a deleted persona's old share link should 404 like
+    everything else about it does.
+
+    Returns (persona, owner_user_id), not just the persona — same shape as
+    scheduler/models.py::claim_due, for the same reason: an anonymous
+    visitor has no user_id of their own, but every internal call this
+    persona's chat turn makes (tool resolution, scheduling) still needs
+    the *owner's* user_id to scope against, exactly as if the owner had
+    made the call themselves."""
+    row = await db.scalar(
+        select(PersonaRow).where(PersonaRow.share_token == share_token, PersonaRow.deleted_at.is_(None))
+    )
+    return (_to_domain(row), row.user_id) if row else None

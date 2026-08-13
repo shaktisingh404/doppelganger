@@ -56,6 +56,24 @@ class Persona(Base):
     # persona_store.py filters on this), but the row (and its chat history)
     # stays for audit/recovery rather than a hard DELETE.
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Public share link — see storage/persona_store.py::enable_sharing/
+    # disable_sharing. Non-null means an anonymous visitor with this token
+    # can chat with this persona via app/routers/public.py, with no auth
+    # and no visibility into system_prompt/archetype/tools.
+    share_token: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, nullable=True)
+
+
+class PublicSession(Base):
+    __tablename__ = "public_sessions"
+
+    # This id IS the session token handed to the visitor's browser and
+    # stored in their localStorage — see storage/public_session_store.py.
+    # One row per anonymous visitor's conversation with a shared persona,
+    # so concurrent visitors on the same share link never see each
+    # other's messages (chat_messages.session_id below scopes to this).
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    persona_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("personas.id", ondelete="CASCADE"), index=True, nullable=False)
+    created_at: Mapped[datetime] = _now()
 
 
 class ChatMessage(Base):
@@ -67,6 +85,13 @@ class ChatMessage(Base):
     # explicitly. seq exists only to order one thread's messages.
     seq: Mapped[int] = mapped_column(Integer, Identity(always=False), nullable=False, unique=True)
     persona_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("personas.id", ondelete="CASCADE"), index=True, nullable=False)
+    # NULL = the owner's own authenticated test thread (every row before
+    # this column existed, and every future authenticated chat turn).
+    # Set = one visitor's public-share conversation, scoped by session
+    # rather than by user_id since a visitor is never authenticated.
+    session_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("public_sessions.id", ondelete="CASCADE"), index=True, nullable=True
+    )
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = _now()
@@ -93,6 +118,13 @@ class ScheduledCall(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
     persona_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("personas.id", ondelete="CASCADE"), index=True, nullable=False)
+    # Same NULL-means-owner-thread convention as ChatMessage.session_id —
+    # a callback scheduled from inside a public visitor's session fires
+    # its proactive follow-up back into that visitor's own thread, not
+    # the owner's.
+    session_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("public_sessions.id", ondelete="CASCADE"), index=True, nullable=True
+    )
     phone_number: Mapped[str] = mapped_column(String(50), nullable=False)
     scheduled_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     context_summary: Mapped[str] = mapped_column(Text, nullable=False)

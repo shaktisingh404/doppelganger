@@ -32,6 +32,12 @@ class ScheduledCall(BaseModel):
     source_call_id: str
     attempts: int = 0
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    # Set when this callback was requested from inside a public visitor's
+    # session (app/routers/public.py), not the owner's own authenticated
+    # thread -- scheduler/dispatcher.py uses it to fire the eventual
+    # proactive reply back into that same visitor's conversation rather
+    # than the owner's.
+    session_id: str | None = None
 
 
 def _to_domain(row: ScheduledCallRow) -> ScheduledCall:
@@ -46,6 +52,7 @@ def _to_domain(row: ScheduledCallRow) -> ScheduledCall:
         source_call_id=row.source_call_id,
         attempts=row.attempts,
         created_at=row.created_at,
+        session_id=str(row.session_id) if row.session_id else None,
     )
 
 
@@ -54,6 +61,7 @@ async def add(db: AsyncSession, call: ScheduledCall, user_id: uuid.UUID) -> None
         id=uuid.UUID(call.id),
         user_id=user_id,
         persona_id=uuid.UUID(call.persona_id),
+        session_id=uuid.UUID(call.session_id) if call.session_id else None,
         phone_number=call.phone_number,
         scheduled_time=call.scheduled_time,
         context_summary=call.context_summary,

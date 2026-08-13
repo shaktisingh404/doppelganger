@@ -21,6 +21,7 @@ from app.schemas import (
     ChatResponse,
     CreatePersonaRequest,
     GeneratePromptResponse,
+    ShareLinkResponse,
     UpdatePersonaRequest,
     UpdatePersonaToolsRequest,
 )
@@ -99,6 +100,32 @@ async def delete_persona(
     (tools/handoff.py already skips unresolvable destinations); no cascade
     needed on this side."""
     await persona_store.delete(db, uuid.UUID(persona.persona_id), user.id)
+
+
+@router.post("/{persona_id}/share", response_model=ShareLinkResponse)
+async def enable_share(
+    persona: AssembledPersona = Depends(require_persona),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Enables (or regenerates) this persona's public chat link — see
+    app/routers/public.py for what an anonymous visitor can do with it.
+    Regenerating always mints a fresh token; the old link stops working
+    immediately, not just for new visitors but for anyone with an
+    in-flight session against the old token."""
+    token = await persona_store.enable_sharing(db, uuid.UUID(persona.persona_id), user.id)
+    logger.info("persona_id=%s sharing enabled", persona.persona_id)
+    return ShareLinkResponse(share_token=token)
+
+
+@router.delete("/{persona_id}/share", status_code=204)
+async def disable_share(
+    persona: AssembledPersona = Depends(require_persona),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    await persona_store.disable_sharing(db, uuid.UUID(persona.persona_id), user.id)
+    logger.info("persona_id=%s sharing disabled", persona.persona_id)
 
 
 @router.put("/{persona_id}/tools", response_model=AssembledPersona)

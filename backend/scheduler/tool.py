@@ -72,6 +72,7 @@ async def schedule_callback(
     scheduled_time: str,
     context_summary: str,
     resume_stage: str | None = None,
+    session_id: str | None = None,
     now: datetime | None = None,
 ) -> ScheduledCall:
     now = now or datetime.now(timezone.utc)
@@ -114,16 +115,27 @@ async def schedule_callback(
         context_summary=context_summary,
         resume_stage=resume_stage,
         source_call_id=source_call_id,
+        session_id=session_id,
     )
     await scheduled_call_store.add(db, row, user_id)
     return row
 
 
 async def execute_schedule_callback_tool_call(
-    db: AsyncSession, settings: Settings, user_id: uuid.UUID, persona_id: str, tool_name: str, args: dict
+    db: AsyncSession,
+    settings: Settings,
+    user_id: uuid.UUID,
+    persona_id: str,
+    tool_name: str,
+    args: dict,
+    session_id: str | None = None,
 ) -> str:
     """Adapts providers.llm.run_turn's generic (tool_name, args) -> JSON
-    string tool_executor contract to schedule_callback."""
+    string tool_executor contract to schedule_callback. session_id is set
+    only for a public-share chat turn (app/routers/public.py) — it's
+    threaded through so the eventual proactive reply
+    (scheduler/dispatcher.py) lands back in that visitor's own
+    conversation rather than the persona owner's."""
     if tool_name != "schedule_callback":
         return json.dumps({"error": f"unknown tool {tool_name}"})
     try:
@@ -134,11 +146,15 @@ async def execute_schedule_callback_tool_call(
             persona_id=persona_id,
             # chat has no phone number to key the per-identity pending cap on,
             # so persona_id (1:1 with a chat thread today) stands in for it.
+            # Deliberately persona-wide, not per-session, for a shared
+            # persona: the cap is abuse prevention against the persona as
+            # a whole, not per-visitor.
             phone_number=persona_id,
             source_call_id="chat",
             scheduled_time=args.get("scheduled_time", ""),
             context_summary=args.get("context_summary", ""),
             resume_stage=args.get("resume_stage"),
+            session_id=session_id,
         )
     except ScheduleCallbackError as e:
         # INFO, not an error: this is the model's attempt getting rejected,

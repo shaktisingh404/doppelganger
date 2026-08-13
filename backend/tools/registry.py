@@ -23,6 +23,9 @@ async def build_chat_tools(
     persona_id: str,
     user_id: uuid.UUID,
     settings: Settings,
+    *,
+    include_handoff: bool = True,
+    session_id: str | None = None,
 ) -> tuple[list[dict], ToolExecutor]:
     """Attached tools whose type has no registered schema (or, for
     handoff, no resolvable destination) are silently skipped rather than
@@ -33,6 +36,18 @@ async def build_chat_tools(
     the first one attached wins. (For handoff specifically, this is a
     non-issue in practice: one instance already holds a list of
     destinations, matching how it's meant to be used.)
+
+    include_handoff=False is set for public-share chat turns
+    (app/routers/public.py): handoff redirects a thread by setting
+    Persona.active_persona_id, a column on the persona itself, not per
+    conversation. That's fine for the owner's own single test thread, but
+    a shared persona can have many concurrent visitor sessions — one
+    visitor's handoff would silently redirect every other visitor's
+    conversation too. Not fixed by scoping it out here; properly fixing it
+    means moving handoff state onto the session itself.
+
+    session_id, when set, is threaded only to schedule_callback — see
+    execute_schedule_callback_tool_call.
     """
     schemas = [{"type": "function", "function": SCHEDULE_CALLBACK_TOOL}]
     by_name: dict[str, ActivatedTool] = {}
@@ -41,7 +56,7 @@ async def build_chat_tools(
     for activated in activated_tools:
         if activated.tool_id in seen_tool_ids:
             continue
-        if activated.tool_id == "handoff":
+        if activated.tool_id == "handoff" and include_handoff:
             schema = await build_handoff_schema(db, activated, user_id)
         else:
             schema = None
@@ -53,7 +68,9 @@ async def build_chat_tools(
 
     async def executor(name: str, args: dict) -> str:
         if name == "schedule_callback":
-            return await execute_schedule_callback_tool_call(db, settings, user_id, persona_id, name, args)
+            return await execute_schedule_callback_tool_call(
+                db, settings, user_id, persona_id, name, args, session_id=session_id
+            )
         activated = by_name.get(name)
         if activated is None:
             return json.dumps({"error": f"unknown tool {name}"})

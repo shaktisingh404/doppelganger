@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import archetypes, auth, personas, scheduled_calls, tools
+from app.routers import archetypes, auth, personas, public, scheduled_calls, tools
 from config import get_settings
 from scheduler.dispatcher import start_dispatcher
 from utils.logging_config import configure as configure_logging
@@ -41,5 +41,6 @@ app.add_middleware(
 app.include_router(archetypes.router)
 app.include_router(auth.router)
 app.include_router(personas.router)
+app.include_router(public.router)
 app.include_router(scheduled_calls.router)
 app.include_router(tools.router)

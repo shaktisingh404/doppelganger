@@ -15,6 +15,7 @@ from sqlalchemy import delete
 
 import scheduler.models as scheduled_call_store
 import storage.persona_store as persona_store
+import storage.public_session_store as public_session_store
 from compiler.models import AssembledPersona
 from config import get_settings
 from db.models import User
@@ -246,6 +247,30 @@ async def main():
     assert unknown_row.attempts == 1
 
     print("dispatcher retry/fail: ok")
+
+    # --- dispatcher: a callback scheduled from a public session fires ---
+    # --- back into that session's thread, not the owner's own ----------
+
+    dispatcher.run_turn = fake_run_turn_ok
+    async with session_factory() as db:
+        session_id = await public_session_store.create(db, uuid.UUID(persona_id))
+        await db.commit()
+    session_row = _due_row(persona_id, session_id=str(session_id))
+    async with session_factory() as db:
+        await scheduled_call_store.add(db, session_row, user_id)
+        await db.commit()
+    await dispatcher._dispatch_one(session_row, user_id, SETTINGS)
+
+    async with session_factory() as db:
+        session_history = await persona_store.get_session_history(db, uuid.UUID(persona_id), session_id)
+        owner_history = await persona_store.get_history(db, uuid.UUID(persona_id), user_id)
+    assert session_history[-1] == {"role": "assistant", "content": "Hey, following up like I said I would!"}
+    # The owner's own thread got exactly one assistant message from the
+    # earlier ok_row dispatch -- still length 1, not 2, proves this
+    # session-scoped dispatch didn't also (incorrectly) append there too.
+    assert len(owner_history) == 1
+
+    print("session-scoped dispatch: ok")
 
     # --- cleanup: cascades personas/scheduled_calls/chat_messages ---------
     async with session_factory() as db:

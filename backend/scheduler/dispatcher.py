@@ -75,7 +75,18 @@ async def _dispatch_one(row: ScheduledCall, user_id: uuid.UUID, settings: Settin
                 )
                 return
 
-            history = await persona_store.get_history(db, persona_id, user_id)
+            # session_id set -> this callback was requested from inside a
+            # public visitor's conversation (app/routers/public.py), so the
+            # follow-up must land back in that same session's thread, not
+            # the owner's own. Handoff is never offered in public sessions
+            # (tools/registry.py's include_handoff=False there), so
+            # get_effective's persona-wide active_persona_id resolution
+            # above is still correct either way.
+            session_id = uuid.UUID(row.session_id) if row.session_id else None
+            if session_id is not None:
+                history = await persona_store.get_session_history(db, persona_id, session_id)
+            else:
+                history = await persona_store.get_history(db, persona_id, user_id)
             prompt = build_resume_context_block(row.context_summary, row.resume_stage)
 
             try:
@@ -107,7 +118,10 @@ async def _dispatch_one(row: ScheduledCall, user_id: uuid.UUID, settings: Settin
                 await db.commit()
                 return
 
-            await persona_store.append_history(db, persona_id, "assistant", reply)
+            if session_id is not None:
+                await persona_store.append_session_history(db, persona_id, session_id, "assistant", reply)
+            else:
+                await persona_store.append_history(db, persona_id, "assistant", reply)
             row.status = "completed"
             await scheduled_call_store.update(db, row, user_id)
             await db.commit()

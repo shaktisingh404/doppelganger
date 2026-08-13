@@ -108,3 +108,7 @@ class AssembledPersona(BaseModel):
     # app.state.tool_instance_store per chat turn, so a tool's config can
     # change without touching every persona that references it.
     tool_instance_ids: list[str] = Field(default_factory=list)
+    # Non-None means an anonymous visitor holding this token can chat with
+    # this persona via app/routers/public.py — see
+    # storage/persona_store.py::enable_sharing/disable_sharing.
+    share_token: str | None = None
